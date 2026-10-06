@@ -1,9 +1,11 @@
 import { Camera, Check, ChevronLeft, ChevronRight, Download, FilePlus2, GripVertical, Images, Plus, RotateCcw, RotateCw, ScanLine, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { CornerEditor } from '../components/CornerEditor'
+import { DiagnosticsPanel } from '../components/DiagnosticsPanel'
 import { PageComparison } from '../components/PageComparison'
 import { PageIntro } from '../components/PageIntro'
 import { createDocumentPdf } from '../document-processing/pdf'
+import { emitDiagnostic, serializeDiagnosticError } from '../document-processing/diagnostics'
 import { detectDocument, processDocument } from '../document-processing/processor'
 import { fullImageCorners, type Point, type ProcessedPage, type ProcessingMode, type ProcessingStatus } from '../document-processing/types'
 
@@ -70,27 +72,34 @@ export function ScanPage() {
     setDocuments((existing) => existing.map((doc) => ({ ...doc, pages: doc.pages.map((page) => page.id === pageId ? update(page) : page) })))
   }
 
-  const renderPage = async (pageId: string, file: File, corners: Point[], mode: ProcessingMode, rotation: number, detectedCorners: Point[], confidence: number) => {
+  const renderPage = async (pageId: string, file: File, corners: Point[], mode: ProcessingMode, rotation: number, detectedCorners: Point[], confidence: number, diagnosticContext?: 'manual-apply') => {
     const processingToken = makeId()
     updatePage(pageId, (page) => ({ ...page, status: 'cleaning', message: undefined, processingToken }))
     try {
+      if (diagnosticContext) emitDiagnostic('[S&SA apply checkpoint]', { operation: 'process-document', phase: 'before', normalizedCorners: corners, mode, rotation })
       const processed = await processDocument(file, corners, mode, rotation)
+      if (diagnosticContext) emitDiagnostic('[S&SA apply checkpoint]', { operation: 'process-document', phase: 'after', outputDimensions: `${processed.width}x${processed.height}`, blobBytes: processed.blob.size })
       let processedUrl: string
       try {
+        if (diagnosticContext) emitDiagnostic('[S&SA apply checkpoint]', { operation: 'processed-url-creation', phase: 'before', blobBytes: processed.blob.size })
         processedUrl = URL.createObjectURL(processed.blob)
+        if (diagnosticContext) emitDiagnostic('[S&SA apply checkpoint]', { operation: 'processed-url-creation', phase: 'after' })
       } catch (error) {
-        console.error('[S&SA processed URL failure]', JSON.stringify({ stage: 'processed-url-replacement', file: { name: file.name, type: file.type, bytes: file.size }, blobBytes: processed.blob.size, error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error) }))
+        emitDiagnostic('[S&SA processed URL failure]', { stage: 'processed-url-replacement', file: { type: file.type, bytes: file.size }, blobBytes: processed.blob.size, error: serializeDiagnosticError(error) }, 'error')
         throw error
       }
+      if (diagnosticContext) emitDiagnostic('[S&SA apply checkpoint]', { operation: 'live-page-check', phase: 'before', pageIsLive: livePageIds.current.has(pageId) })
       if (!livePageIds.current.has(pageId)) { URL.revokeObjectURL(processedUrl); return false }
+      if (diagnosticContext) emitDiagnostic('[S&SA apply checkpoint]', { operation: 'processed-state-replacement', phase: 'before' })
       updatePage(pageId, (page) => {
         if (page.processingToken !== processingToken) { URL.revokeObjectURL(processedUrl); return page }
         if (page.processedUrl) URL.revokeObjectURL(page.processedUrl)
         return { ...page, processed, processedUrl, corners, detectedCorners, confidence, mode, rotation, status: 'ready', message: undefined, processingToken: undefined }
       })
+      if (diagnosticContext) emitDiagnostic('[S&SA apply checkpoint]', { operation: 'processed-state-replacement', phase: 'after' })
       return true
     } catch (error) {
-      console.error('[S&SA page processing rejected]', error)
+      emitDiagnostic('[S&SA page processing rejected]', { stage: 'render-page', normalizedCorners: corners, mode, rotation, error: serializeDiagnosticError(error) }, 'error')
       updatePage(pageId, (page) => page.processingToken === processingToken ? { ...page, corners, detectedCorners, confidence: 0, status: 'attention', message: "S&SA couldn't confidently clean this page up.", processingToken: undefined } : page)
       setEditingPageId((current) => current ?? pageId)
       return false
@@ -108,7 +117,7 @@ export function ScanPage() {
       }
       await renderPage(page.id, page.file, detection.corners, page.mode, page.rotation, detection.corners, detection.confidence)
     } catch (error) {
-      console.warn('Automatic edge detection needs attention', error)
+      emitDiagnostic('[S&SA detection fallback]', { stage: 'prepare-page', error: serializeDiagnosticError(error) }, 'warn')
       const corners = fullImageCorners()
       updatePage(page.id, (current) => ({ ...current, corners, detectedCorners: corners, confidence: 0, status: 'attention', message: "S&SA couldn't find the paper automatically." }))
       setEditingPageId((current) => current ?? page.id)
@@ -174,9 +183,16 @@ export function ScanPage() {
   }
 
   const applyManualEdges = async (page: ScanPage, corners: Point[]) => {
+    emitDiagnostic('[S&SA apply checkpoint]', { operation: 'manual-corners-state', phase: 'before', normalizedCorners: corners, mode: page.mode, rotation: page.rotation })
     updatePage(page.id, (current) => ({ ...current, corners }))
-    const succeeded = await renderPage(page.id, page.file, corners, page.mode, page.rotation, page.detectedCorners, page.confidence)
-    if (succeeded) setEditingPageId(null)
+    emitDiagnostic('[S&SA apply checkpoint]', { operation: 'manual-corners-state', phase: 'after', normalizedCorners: corners })
+    const succeeded = await renderPage(page.id, page.file, corners, page.mode, page.rotation, page.detectedCorners, page.confidence, 'manual-apply')
+    emitDiagnostic('[S&SA apply checkpoint]', { operation: 'render-page-result', phase: 'after', succeeded })
+    if (succeeded) {
+      emitDiagnostic('[S&SA apply checkpoint]', { operation: 'editor-close', phase: 'before' })
+      setEditingPageId(null)
+      emitDiagnostic('[S&SA apply checkpoint]', { operation: 'editor-close', phase: 'after' })
+    }
     return succeeded
   }
 
@@ -242,6 +258,7 @@ export function ScanPage() {
 
       <input ref={cameraInput} className="visually-hidden" type="file" accept={acceptedImages} capture="environment" onChange={handleInput} />
       <input ref={fileInput} className="visually-hidden" type="file" accept={acceptedImages} multiple onChange={handleInput} />
+      <DiagnosticsPanel />
     </div>
   )
 }

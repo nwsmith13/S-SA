@@ -1,4 +1,5 @@
 import type { DetectionResult, Point, ProcessedPage, ProcessingMode } from './types'
+import { emitDiagnostic, serializeDiagnosticError } from './diagnostics'
 
 type Cv = Record<string, any>
 type LoadedImage = { source: CanvasImageSource; width: number; height: number; decodeMethod: 'image-bitmap' | 'html-image'; release: () => void }
@@ -20,11 +21,6 @@ class ProcessingPipelineError extends Error {
     super(error instanceof Error ? error.message : String(error), { cause: error })
     this.name = 'ProcessingPipelineError'
   }
-}
-
-function serializeError(error: unknown) {
-  if (error instanceof Error) return { name: error.name, message: error.message, stack: error.stack }
-  return { name: 'UnknownError', message: String(error) }
 }
 
 function incrementReason(diagnostics: DetectionDiagnostics, reason: string) {
@@ -56,7 +52,7 @@ async function loadImage(file: File): Promise<LoadedImage> {
       const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
       return { source: bitmap, width: bitmap.width, height: bitmap.height, decodeMethod: 'image-bitmap', release: () => bitmap.close() }
     } catch (error) {
-      console.warn('[S&SA decode fallback]', JSON.stringify({ from: 'createImageBitmap', to: 'html-image', error: serializeError(error) }))
+      emitDiagnostic('[S&SA decode fallback]', { from: 'createImageBitmap', to: 'html-image', error: serializeDiagnosticError(error) }, 'warn')
       // Safari and HEIC implementations can expose createImageBitmap but still reject a decodable file.
     }
   }
@@ -71,7 +67,7 @@ async function loadImage(file: File): Promise<LoadedImage> {
         await image.decode()
       } catch (error) {
         if (!image.complete || !image.naturalWidth) throw error
-        console.warn('[S&SA decode fallback]', JSON.stringify({ from: 'html-image.decode', to: 'html-image.complete', error: serializeError(error) }))
+        emitDiagnostic('[S&SA decode fallback]', { from: 'html-image.decode', to: 'html-image.complete', error: serializeDiagnosticError(error) }, 'warn')
       }
     } else {
       await new Promise<void>((resolve, reject) => {
@@ -305,12 +301,12 @@ export async function detectDocument(file: File): Promise<DetectionResult> {
     diagnostics.selected = best ? 0 : null
     const detectionMs = performance.now() - detectionStarted
     const timing = { opencvInitMs, imageDecodeMs, detectionMs, totalMs: performance.now() - totalStarted }
-    console.info('[S&SA detection diagnostics]', JSON.stringify(diagnostics))
-    console.info('[S&SA scan timing]', JSON.stringify({ stage: 'detect', method: best?.method ?? 'none', dimensions: `${width}x${height}`, ...timing }))
+    emitDiagnostic('[S&SA detection diagnostics]', diagnostics)
+    emitDiagnostic('[S&SA scan timing]', { stage: 'detect', method: best?.method ?? 'none', dimensions: `${width}x${height}`, ...timing })
     if (!best) throw new Error('No reasonable paper candidate found')
     return { corners: best.points.map((point) => ({ x: point.x / width, y: point.y / height })), confidence: best.confidence, sourceWidth: width, sourceHeight: height, method: best.method, timing }
   } catch (error) {
-    console.error('[S&SA detection failure]', JSON.stringify({ stage: failureStage, error: serializeError(error), diagnostics }))
+    emitDiagnostic('[S&SA detection failure]', { stage: failureStage, error: serializeDiagnosticError(error), diagnostics }, 'error')
     throw error
   } finally {
     image?.release()
@@ -349,21 +345,33 @@ export async function processDocument(file: File, corners: Point[], mode: Proces
   let enhanced: any = null
   let rotated: any = null
   let outputMat: any = null
+  const checkpoint = (operation: string, phase: 'before' | 'after', details: Record<string, unknown> = {}) => {
+    emitDiagnostic('[S&SA processing checkpoint]', { operation, phase, mode, rotation, normalizedCorners: corners, ...details })
+  }
   try {
     let stageStarted = performance.now()
+    checkpoint('opencv-initialization', 'before')
     cv = await getCv()
     timings[stage] = performance.now() - stageStarted
+    checkpoint('opencv-initialization', 'after', { elapsedMs: timings[stage] })
 
     stage = 'original-image-decode'; stageStarted = performance.now()
+    checkpoint(stage, 'before', { file: { type: file.type, bytes: file.size } })
     image = await loadImage(file)
     const decodeMethod = image.decodeMethod
     const originalDimensions = `${image.width}x${image.height}`
     timings[stage] = performance.now() - stageStarted
+    checkpoint(stage, 'after', { decodeMethod, originalDimensions, elapsedMs: timings[stage] })
 
     stage = 'canvas-creation-draw'; stageStarted = performance.now()
+    checkpoint('canvas-creation-draw', 'before', { decodeMethod, originalDimensions, maximumDimension: 2200 })
     const { context, width, height } = drawImage(image, 2200)
+    checkpoint('canvas-creation-draw', 'after', { workingDimensions: `${width}x${height}` })
     image.release(); image = null
+    stage = 'canvas-image-data-read'; checkpoint(stage, 'before', { workingDimensions: `${width}x${height}` })
     const imageData = context.getImageData(0, 0, width, height)
+    checkpoint(stage, 'after', { imageDataDimensions: `${imageData.width}x${imageData.height}` })
+    stage = 'canvas-creation-draw'
     timings[stage] = performance.now() - stageStarted
 
     if (corners.length !== 4 || corners.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) throw new Error(`Invalid normalized corners: ${JSON.stringify(corners)}`)
@@ -377,25 +385,38 @@ export async function processDocument(file: File, corners: Point[], mode: Proces
     if (polygonArea(ordered) < width * height * .005) throw new Error(`Selected corners produce an unusably small page: ${JSON.stringify(ordered)}`)
 
     stage = 'opencv-source-creation'; stageStarted = performance.now()
+    checkpoint(stage, 'before', { imageDataDimensions: `${imageData.width}x${imageData.height}` })
     source = cv.matFromImageData(imageData)
     if (!source || source.empty()) throw new Error(`OpenCV source Mat is empty for ${width}x${height}`)
     timings[stage] = performance.now() - stageStarted
+    checkpoint(stage, 'after', { sourceDimensions: `${source.cols}x${source.rows}`, elapsedMs: timings[stage] })
 
-    stage = 'perspective-transform'; stageStarted = performance.now()
+    stage = 'perspective-output-allocation'; stageStarted = performance.now()
+    checkpoint(stage, 'before', { outputDimensions: `${outputWidth}x${outputHeight}` })
     warped = new cv.Mat()
+    checkpoint(stage, 'after')
+    stage = 'perspective-source-points'; checkpoint(stage, 'before', { pixelCorners: ordered })
     sourcePoints = cv.matFromArray(4, 1, cv.CV_32FC2, ordered.flatMap((point) => [point.x, point.y]))
+    checkpoint(stage, 'after', { rows: sourcePoints.rows, columns: sourcePoints.cols })
+    stage = 'perspective-target-points'; checkpoint(stage, 'before', { outputDimensions: `${outputWidth}x${outputHeight}` })
     targetPoints = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, outputWidth - 1, 0, outputWidth - 1, outputHeight - 1, 0, outputHeight - 1])
+    checkpoint(stage, 'after', { rows: targetPoints.rows, columns: targetPoints.cols })
+    stage = 'perspective-matrix'; checkpoint(stage, 'before')
     transform = cv.getPerspectiveTransform(sourcePoints, targetPoints)
     if (!transform || transform.empty()) throw new Error('OpenCV returned an empty perspective transform')
+    checkpoint(stage, 'after', { rows: transform.rows, columns: transform.cols })
+    stage = 'perspective-warp'; checkpoint(stage, 'before', { sourceDimensions: `${source.cols}x${source.rows}`, outputDimensions: `${outputWidth}x${outputHeight}` })
     cv.warpPerspective(source, warped, transform, new cv.Size(outputWidth, outputHeight), cv.INTER_LINEAR, cv.BORDER_REPLICATE)
     if (warped.empty()) throw new Error(`Perspective output is empty for ${outputWidth}x${outputHeight}`)
+    checkpoint(stage, 'after', { warpedDimensions: `${warped.cols}x${warped.rows}` })
     source.delete(); source = null
     sourcePoints.delete(); sourcePoints = null
     targetPoints.delete(); targetPoints = null
     transform.delete(); transform = null
-    timings[stage] = performance.now() - stageStarted
+    timings['perspective-transform'] = performance.now() - stageStarted
 
     stage = 'image-enhancement'; stageStarted = performance.now()
+    checkpoint(stage, 'before', { warpedDimensions: `${warped.cols}x${warped.rows}` })
     enhanced = applyEnhancement(cv, warped, mode)
     warped.delete(); warped = null
     if (rotation === 90 || rotation === 180 || rotation === 270) {
@@ -407,24 +428,31 @@ export async function processDocument(file: File, corners: Point[], mode: Proces
       outputMat = rotated
     } else outputMat = enhanced
     timings[stage] = performance.now() - stageStarted
+    checkpoint(stage, 'after', { outputDimensions: `${outputMat.cols}x${outputMat.rows}`, elapsedMs: timings[stage] })
 
-    stage = 'destination-rendering'; stageStarted = performance.now()
+    stage = 'destination-canvas-creation'; stageStarted = performance.now()
+    checkpoint(stage, 'before', { outputDimensions: `${outputMat.cols}x${outputMat.rows}` })
     const outputCanvas = document.createElement('canvas')
     outputCanvas.width = outputMat.cols; outputCanvas.height = outputMat.rows
     if (outputCanvas.width !== outputMat.cols || outputCanvas.height !== outputMat.rows) throw new Error(`Destination canvas allocation failed for ${outputMat.cols}x${outputMat.rows}`)
+    checkpoint(stage, 'after', { canvasDimensions: `${outputCanvas.width}x${outputCanvas.height}` })
+    stage = 'destination-rendering'; checkpoint(stage, 'before', { outputDimensions: `${outputMat.cols}x${outputMat.rows}` })
     cv.imshow(outputCanvas, outputMat)
+    checkpoint(stage, 'after', { canvasDimensions: `${outputCanvas.width}x${outputCanvas.height}` })
     timings[stage] = performance.now() - stageStarted
 
     stage = 'jpeg-blob-creation'; stageStarted = performance.now()
+    checkpoint(stage, 'before', { canvasDimensions: `${outputCanvas.width}x${outputCanvas.height}`, type: 'image/jpeg', quality: .9 })
     const blob = await canvasToBlob(outputCanvas, 'image/jpeg', .9)
     if (!blob.size) throw new Error('JPEG encoder returned an empty blob')
     timings[stage] = performance.now() - stageStarted
-    console.info('[S&SA processing diagnostics]', JSON.stringify({ decodeMethod, originalDimensions, workingDimensions: `${width}x${height}`, outputDimensions: `${outputMat.cols}x${outputMat.rows}`, normalizedCorners: corners, pixelCorners: ordered, blobBytes: blob.size, timings, totalMs: performance.now() - started }))
-    console.info('[S&SA scan timing]', JSON.stringify({ stage: 'process', dimensions: `${width}x${height}`, output: `${outputMat.cols}x${outputMat.rows}`, processingMs: performance.now() - started }))
+    checkpoint(stage, 'after', { blobBytes: blob.size, blobType: blob.type, elapsedMs: timings[stage] })
+    emitDiagnostic('[S&SA processing diagnostics]', { decodeMethod, originalDimensions, workingDimensions: `${width}x${height}`, outputDimensions: `${outputMat.cols}x${outputMat.rows}`, normalizedCorners: corners, pixelCorners: ordered, blobBytes: blob.size, mode, rotation, timings, totalMs: performance.now() - started })
+    emitDiagnostic('[S&SA scan timing]', { stage: 'process', dimensions: `${width}x${height}`, output: `${outputMat.cols}x${outputMat.rows}`, processingMs: performance.now() - started })
     return { blob, width: outputMat.cols, height: outputMat.rows }
   } catch (error) {
     const pipelineError = error instanceof ProcessingPipelineError ? error : new ProcessingPipelineError(stage, error)
-    console.error('[S&SA processing failure]', JSON.stringify({ stage: pipelineError.stage, file: { name: file.name, type: file.type, bytes: file.size }, corners, mode, rotation, timings, elapsedMs: performance.now() - started, error: serializeError(pipelineError.cause ?? pipelineError) }))
+    emitDiagnostic('[S&SA processing failure]', { stage: pipelineError.stage, file: { type: file.type, bytes: file.size }, corners, mode, rotation, timings, elapsedMs: performance.now() - started, error: serializeDiagnosticError(pipelineError.cause ?? pipelineError) }, 'error')
     throw pipelineError
   } finally {
     image?.release()

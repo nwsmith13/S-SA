@@ -245,6 +245,17 @@ main { min-height: calc(100vh - 78px); }
 .comparison-modal > footer p { margin: 0; color: var(--muted); }
 .comparison-modal > footer .secondary-button { margin: 0; }
 
+.diagnostics-panel { position: fixed; z-index: 90; right: 12px; bottom: 12px; width: min(520px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; border: 1px solid #4b5563; background: #111827; color: #f9fafb; box-shadow: 0 8px 28px rgba(0,0,0,.4); font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.diagnostics-panel > summary { min-height: 44px; padding: 13px 15px; cursor: pointer; font-family: system-ui, sans-serif; font-weight: 800; }
+.diagnostics-panel__body { padding: 0 14px 14px; }
+.diagnostics-panel__body > p { margin: 0 0 12px; color: #d1d5db; }
+.diagnostics-panel__body section { margin: 12px 0; }
+.diagnostics-panel__body h3, .diagnostics-panel__body label { display: block; margin: 0 0 5px; color: #fdba74; font: 700 12px/1.4 system-ui, sans-serif; }
+.diagnostics-panel__body pre { max-height: 190px; margin: 0; padding: 9px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #030712; border: 1px solid #374151; }
+.diagnostics-panel__body button { min-height: 44px; padding: 0 14px; border: 1px solid #f9fafb; background: #f9fafb; color: #111827; font-weight: 800; cursor: pointer; }
+.diagnostics-panel__body textarea { width: 100%; min-height: 120px; margin-top: 5px; padding: 8px; resize: vertical; background: #030712; color: #f9fafb; border: 1px solid #6b7280; font: inherit; }
+.diagnostics-panel__body button + p { display: inline; margin-left: 10px; color: #d1fae5; }
+
 @keyframes scan-pulse { from { opacity: .45; transform: translateY(-3px); } to { opacity: 1; transform: translateY(3px); } }
 
 .drop-zone { min-height: 380px; padding: 55px 24px; border: 1.5px dashed #8a837a; background: rgba(255,253,248,.5); display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; transition: background .2s, border-color .2s, transform .2s; }
