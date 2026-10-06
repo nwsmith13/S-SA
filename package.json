@@ -7,7 +7,8 @@
     "dev": "node ./node_modules/vite/bin/vite.js",
     "build": "node ./node_modules/typescript/bin/tsc -b && node ./node_modules/vite/bin/vite.js build",
     "preview": "node ./node_modules/vite/bin/vite.js preview",
-    "test:detection": "node tests/document-detection.regression.mjs"
+    "test:detection": "node tests/document-detection.regression.mjs",
+    "test:routing": "node tests/spa-routing.regression.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "latest",
