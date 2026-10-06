@@ -76,16 +76,18 @@ export function ScanPage() {
     try {
       const processed = await processDocument(file, corners, mode, rotation)
       const processedUrl = URL.createObjectURL(processed.blob)
-      if (!livePageIds.current.has(pageId)) { URL.revokeObjectURL(processedUrl); return }
+      if (!livePageIds.current.has(pageId)) { URL.revokeObjectURL(processedUrl); return false }
       updatePage(pageId, (page) => {
         if (page.processingToken !== processingToken) { URL.revokeObjectURL(processedUrl); return page }
         if (page.processedUrl) URL.revokeObjectURL(page.processedUrl)
         return { ...page, processed, processedUrl, corners, detectedCorners, confidence, mode, rotation, status: 'ready', message: undefined, processingToken: undefined }
       })
+      return true
     } catch (error) {
       console.error('Document processing failed', error)
       updatePage(pageId, (page) => page.processingToken === processingToken ? { ...page, corners, detectedCorners, confidence: 0, status: 'attention', message: "S&SA couldn't confidently clean this page up.", processingToken: undefined } : page)
       setEditingPageId((current) => current ?? pageId)
+      return false
     }
   }
 
@@ -165,6 +167,13 @@ export function ScanPage() {
     void renderPage(page.id, page.file, next.corners, next.mode, next.rotation, next.detectedCorners, next.confidence)
   }
 
+  const applyManualEdges = async (page: ScanPage, corners: Point[]) => {
+    updatePage(page.id, (current) => ({ ...current, corners }))
+    const succeeded = await renderPage(page.id, page.file, corners, page.mode, page.rotation, page.detectedCorners, page.confidence)
+    if (succeeded) setEditingPageId(null)
+    return succeeded
+  }
+
   const startNewDocument = () => {
     const doc = createDocument()
     setDocuments((existing) => [...existing, doc])
@@ -222,7 +231,7 @@ export function ScanPage() {
 
       {view === 'summary' && <ScanSummary documents={filledDocuments} totalPages={totalPages} pdfs={pdfs} creatingPdfs={creatingPdfs} onCreatePdfs={createPdfs} onEdit={() => setView('review')} />}
 
-      {editingPage && <CornerEditor imageUrl={editingPage.originalUrl} corners={editingPage.corners} detectedCorners={editingPage.detectedCorners} onClose={() => setEditingPageId(null)} onApply={(corners) => { setEditingPageId(null); reprocess(editingPage, { corners }) }} />}
+      {editingPage && <CornerEditor imageUrl={editingPage.originalUrl} corners={editingPage.corners} detectedCorners={editingPage.detectedCorners} onClose={() => setEditingPageId(null)} onApply={(corners) => applyManualEdges(editingPage, corners)} />}
       {reviewingPage && <PageComparison pageNumber={(currentDocument?.pages.findIndex((page) => page.id === reviewingPage.id) ?? 0) + 1} originalUrl={reviewingPage.originalUrl} processedUrl={reviewingPage.processedUrl} needsAttention={reviewingPage.status === 'attention'} onClose={() => setReviewingPageId(null)} onAdjust={() => { setReviewingPageId(null); setEditingPageId(reviewingPage.id) }} />}
 
       <input ref={cameraInput} className="visually-hidden" type="file" accept={acceptedImages} capture="environment" onChange={handleInput} />

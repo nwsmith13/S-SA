@@ -230,6 +230,10 @@ main { min-height: calc(100vh - 78px); }
 .edge-secondary-actions { display: flex; gap: 9px; }
 .edge-secondary-actions button { min-height: 44px; padding: 0 13px; border: 1px solid var(--line); background: transparent; color: var(--ink); font-weight: 700; cursor: pointer; }
 .edge-editor > footer .primary-button { min-width: 130px; }
+.edge-applying, .edge-error { margin: 14px 0 0; padding: 11px 13px; font-size: .86rem; font-weight: 750; }
+.edge-applying { color: #214c3e; background: #e7eee7; }
+.edge-error { color: #7c291a; background: #fff0eb; border-left: 4px solid var(--coral); }
+.edge-editor button:disabled { cursor: wait; opacity: .55; }
 .comparison-switch { width: fit-content; display: flex; border: 1px solid var(--ink); margin-bottom: 17px; }
 .comparison-switch button { min-height: 42px; padding: 0 20px; border: 0; background: transparent; color: var(--ink); font-weight: 800; cursor: pointer; }
 .comparison-switch button + button { border-left: 1px solid var(--ink); }

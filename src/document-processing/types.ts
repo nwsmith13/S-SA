@@ -15,6 +15,13 @@ export type DetectionResult = {
   confidence: number
   sourceWidth: number
   sourceHeight: number
+  method: 'light-contour' | 'edge-contour' | 'edge-hull'
+  timing: {
+    opencvInitMs: number
+    imageDecodeMs: number
+    detectionMs: number
+    totalMs: number
+  }
 }
 
 export const fullImageCorners = (): Point[] => [
