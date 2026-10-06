@@ -239,7 +239,7 @@ export async function detectDocument(file: File): Promise<DetectionResult> {
 
   try {
     const cvWaitStarted = performance.now()
-    const cv = await getOpenCv()
+    const { cv } = await getOpenCv()
     const opencvInitMs = getOpenCvInitializationMs() || performance.now() - cvWaitStarted
     failureStage = 'original-image-decode'
     const decodeStarted = performance.now()
@@ -335,7 +335,7 @@ export async function processDocument(file: File, corners: Point[], mode: Proces
   try {
     let stageStarted = performance.now()
     checkpoint('opencv-initialization', 'before')
-    cv = await getOpenCv()
+    ;({ cv } = await getOpenCv())
     timings[stage] = performance.now() - stageStarted
     checkpoint('opencv-initialization', 'after', { elapsedMs: timings[stage] })
 
