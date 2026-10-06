@@ -1,12 +1,12 @@
 import type { DetectionResult, Point, ProcessedPage, ProcessingMode } from './types'
 import { emitDiagnostic, serializeDiagnosticError } from './diagnostics'
 import { getOpenCv, getOpenCvInitializationMs, type CvRuntime } from './opencv-loader'
-import { assessCandidateQuality, type CandidateQualityAssessment } from './candidate-quality'
+import { selectCandidateByQuality, type CandidateQualityAssessment } from './candidate-quality'
 
 type Cv = CvRuntime
 type LoadedImage = { source: CanvasImageSource; width: number; height: number; decodeMethod: 'image-bitmap' | 'html-image'; release: () => void }
 type Candidate = { points: Point[]; confidence: number; method: DetectionResult['method'] }
-type StageStats = { contours: number; eligibleContours: number; exactCandidates: number; hullCandidates: number }
+type StageStats = { contours: number; eligibleContours: number; exactCandidates: number; hullCandidates: number; maxAreaRatio: number; above2Percent: number; above4Percent: number; above6Percent: number; rejectedBelow8Percent: number }
 type DetectionDiagnostics = {
   file: { name: string; type: string; bytes: number }
   decode?: { method: LoadedImage['decodeMethod']; width: number; height: number }
@@ -14,10 +14,11 @@ type DetectionDiagnostics = {
   canny?: { median: number; low: number; high: number; otsu: number }
   stages: { light: StageStats; edge: StageStats; lines: { count: number; candidate: boolean } }
   rejections: Record<string, number>
-  candidates: Array<{ method: Candidate['method']; score: number; areaRatio: number; corners: number[][] }>
+  candidates: Array<{ method: Candidate['method']; score: number; areaRatio: number; corners: number[][]; accepted: boolean; rejectionReasons: string[]; boundaryFollowingEdges: CandidateQualityAssessment['boundaryFollowingEdges'] }>
   selected: number | null
   candidateQuality?: CandidateQualityAssessment
   fallback?: 'manual-adjust-edges'
+  selectionDecision?: { highestScoreIndex: number | null; selectedIndex: number | null; rejectedHigherCandidates: number; behavior: 'auto-apply' | 'manual-adjust-edges' }
 }
 
 class ProcessingPipelineError extends Error {
@@ -162,7 +163,12 @@ function candidatesFromMask(cv: Cv, mask: any, width: number, height: number, me
       const contour = contours.get(index)
       const perimeter = cv.arcLength(contour, true)
       const contourArea = Math.abs(cv.contourArea(contour))
-      if (contourArea < width * height * .08) { incrementReason(diagnostics, `${method}:contour-too-small`); contour.delete(); continue }
+      const areaRatio = contourArea / (width * height)
+      stats.maxAreaRatio = Math.max(stats.maxAreaRatio, areaRatio)
+      if (areaRatio >= .02) stats.above2Percent += 1
+      if (areaRatio >= .04) stats.above4Percent += 1
+      if (areaRatio >= .06) stats.above6Percent += 1
+      if (areaRatio < .08) { stats.rejectedBelow8Percent += 1; incrementReason(diagnostics, `${method}:contour-too-small`); contour.delete(); continue }
       stats.eligibleContours += 1
       let exactFound = false
       try {
@@ -223,8 +229,8 @@ export async function detectDocument(file: File): Promise<DetectionResult> {
   const diagnostics: DetectionDiagnostics = {
     file: { name: file.name, type: file.type, bytes: file.size },
     stages: {
-      light: { contours: 0, eligibleContours: 0, exactCandidates: 0, hullCandidates: 0 },
-      edge: { contours: 0, eligibleContours: 0, exactCandidates: 0, hullCandidates: 0 },
+      light: { contours: 0, eligibleContours: 0, exactCandidates: 0, hullCandidates: 0, maxAreaRatio: 0, above2Percent: 0, above4Percent: 0, above6Percent: 0, rejectedBelow8Percent: 0 },
+      edge: { contours: 0, eligibleContours: 0, exactCandidates: 0, hullCandidates: 0, maxAreaRatio: 0, above2Percent: 0, above4Percent: 0, above6Percent: 0, rejectedBelow8Percent: 0 },
       lines: { count: 0, candidate: false },
     },
     rejections: {}, candidates: [], selected: null,
@@ -278,24 +284,32 @@ export async function detectDocument(file: File): Promise<DetectionResult> {
     const lineCandidate = candidateFromLines(cv, edgeClosed, width, height, diagnostics)
     if (lineCandidate) candidates.push(lineCandidate)
     candidates.sort((a, b) => b.confidence - a.confidence)
-    const best = candidates[0]
-    diagnostics.candidates = candidates.slice(0, 12).map((candidate) => ({
+    const normalizedCandidates = candidates.map((candidate) => candidate.points.map((point) => ({ x: point.x / width, y: point.y / height })))
+    const qualitySelection = selectCandidateByQuality(candidates.map((candidate, index) => ({ points: normalizedCandidates[index], score: candidate.confidence })))
+    const selectedIndex = qualitySelection.selectedIndex
+    const bestIndex = selectedIndex >= 0 ? selectedIndex : candidates.length ? 0 : -1
+    const best = bestIndex >= 0 ? candidates[bestIndex] : undefined
+    const normalizedBest = bestIndex >= 0 ? normalizedCandidates[bestIndex] : undefined
+    const candidateQuality = bestIndex >= 0 ? qualitySelection.assessments[bestIndex] : undefined
+    diagnostics.candidates = candidates.slice(0, 12).map((candidate, index) => ({
       method: candidate.method,
       score: Math.round(candidate.confidence * 1000) / 1000,
       areaRatio: Math.round(polygonArea(candidate.points) / (width * height) * 1000) / 1000,
       corners: candidate.points.map((point) => [Math.round(point.x / width * 1000) / 1000, Math.round(point.y / height * 1000) / 1000]),
+      accepted: qualitySelection.assessments[index].accepted,
+      rejectionReasons: qualitySelection.assessments[index].reasons,
+      boundaryFollowingEdges: qualitySelection.assessments[index].boundaryFollowingEdges,
     }))
-    const normalizedBest = best?.points.map((point) => ({ x: point.x / width, y: point.y / height }))
-    const candidateQuality = best && normalizedBest ? assessCandidateQuality(normalizedBest, best.confidence) : undefined
     diagnostics.candidateQuality = candidateQuality
-    diagnostics.selected = best && candidateQuality?.accepted ? 0 : null
-    if (best && candidateQuality && !candidateQuality.accepted) diagnostics.fallback = 'manual-adjust-edges'
+    diagnostics.selected = selectedIndex >= 0 ? selectedIndex : null
+    diagnostics.selectionDecision = { highestScoreIndex: candidates.length ? 0 : null, selectedIndex: selectedIndex >= 0 ? selectedIndex : null, rejectedHigherCandidates: selectedIndex >= 0 ? selectedIndex : candidates.length, behavior: selectedIndex >= 0 ? 'auto-apply' : 'manual-adjust-edges' }
+    if (best && selectedIndex < 0) diagnostics.fallback = 'manual-adjust-edges'
     const detectionMs = performance.now() - detectionStarted
     const timing = { opencvInitMs, imageDecodeMs, detectionMs, totalMs: performance.now() - totalStarted }
     emitDiagnostic('[S&SA detection diagnostics]', diagnostics)
     emitDiagnostic('[S&SA scan timing]', { stage: 'detect', method: best?.method ?? 'none', dimensions: `${width}x${height}`, ...timing })
     if (!best) throw new Error('No reasonable paper candidate found')
-    return { corners: normalizedBest!, confidence: candidateQuality?.accepted ? best.confidence : Math.min(.49, best.confidence), sourceWidth: width, sourceHeight: height, method: best.method, timing }
+    return { corners: normalizedBest!, confidence: selectedIndex >= 0 ? best.confidence : Math.min(.49, best.confidence), sourceWidth: width, sourceHeight: height, method: best.method, timing }
   } catch (error) {
     emitDiagnostic('[S&SA detection failure]', { stage: failureStage, error: serializeDiagnosticError(error), diagnostics }, 'error')
     throw error

@@ -7,6 +7,7 @@ export type CandidateQualityAssessment = {
   borderThreshold: number
   borderCornerCount: number
   touchedSides: Array<'left' | 'right' | 'top' | 'bottom'>
+  boundaryFollowingEdges: Array<{ side: 'left' | 'right' | 'top' | 'bottom'; length: number }>
   edgeBalance: number
   convex: boolean
   reasons: string[]
@@ -41,6 +42,18 @@ export function assessCandidateQuality(points: Point[], originalScore: number): 
     return 1 - point.y <= borderThreshold
   }))
   const edgeLengths = points.map((point, index) => distance(point, points[(index + 1) % points.length]))
+  const boundaryFollowingEdges = points.flatMap((point, index) => {
+    const next = points[(index + 1) % points.length]
+    const length = distance(point, next)
+    if (length < .45) return []
+    const side = (['left', 'right', 'top', 'bottom'] as const).find((candidateSide) => {
+      if (candidateSide === 'left') return point.x <= borderThreshold && next.x <= borderThreshold
+      if (candidateSide === 'right') return 1 - point.x <= borderThreshold && 1 - next.x <= borderThreshold
+      if (candidateSide === 'top') return point.y <= borderThreshold && next.y <= borderThreshold
+      return 1 - point.y <= borderThreshold && 1 - next.y <= borderThreshold
+    })
+    return side ? [{ side, length }] : []
+  })
   const edgeBalance = Math.min(...edgeLengths) / Math.max(...edgeLengths)
   const convex = isConvex(points)
   const reasons: string[] = []
@@ -48,7 +61,14 @@ export function assessCandidateQuality(points: Point[], originalScore: number): 
   if (!convex) reasons.push('non-convex-quadrilateral')
   if (areaRatio >= .65 && borderCornerCount >= 3) reasons.push('large-region-with-three-border-corners')
   if (areaRatio >= .65 && touchedSides.length >= 3) reasons.push('large-region-touching-three-image-sides')
+  if (areaRatio >= .60 && borderCornerCount >= 2 && touchedSides.length >= 2 && boundaryFollowingEdges.length >= 1) reasons.push('large-region-with-edge-following-image-boundary')
   if (areaRatio >= .55 && borderCornerCount >= 2 && edgeBalance < .25) reasons.push('large-border-region-with-implausible-edge-balance')
 
-  return { accepted: reasons.length === 0, originalScore, areaRatio, borderThreshold, borderCornerCount, touchedSides, edgeBalance, convex, reasons }
+  return { accepted: reasons.length === 0, originalScore, areaRatio, borderThreshold, borderCornerCount, touchedSides, boundaryFollowingEdges, edgeBalance, convex, reasons }
+}
+
+export function selectCandidateByQuality(candidates: Array<{ points: Point[]; score: number }>) {
+  const assessments = candidates.map((candidate) => assessCandidateQuality(candidate.points, candidate.score))
+  const selectedIndex = assessments.findIndex((assessment) => assessment.accepted)
+  return { assessments, selectedIndex }
 }
