@@ -10,8 +10,11 @@ export type CandidateQualityAssessment = {
   boundaryFollowingEdges: Array<{ side: 'left' | 'right' | 'top' | 'bottom'; length: number }>
   edgeBalance: number
   convex: boolean
+  requiresIndependentAgreement: boolean
   reasons: string[]
 }
+
+export type CandidateAgreement = { corroborated: boolean; comparisonMethod?: string; meanCornerDistance?: number; maximumCornerDistance?: number }
 
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y)
 
@@ -56,6 +59,7 @@ export function assessCandidateQuality(points: Point[], originalScore: number): 
   })
   const edgeBalance = Math.min(...edgeLengths) / Math.max(...edgeLengths)
   const convex = isConvex(points)
+  const requiresIndependentAgreement = areaRatio >= .60 && borderCornerCount >= 2 && touchedSides.length >= 2
   const reasons: string[] = []
 
   if (!convex) reasons.push('non-convex-quadrilateral')
@@ -64,11 +68,26 @@ export function assessCandidateQuality(points: Point[], originalScore: number): 
   if (areaRatio >= .60 && borderCornerCount >= 2 && touchedSides.length >= 2 && boundaryFollowingEdges.length >= 1) reasons.push('large-region-with-edge-following-image-boundary')
   if (areaRatio >= .55 && borderCornerCount >= 2 && edgeBalance < .25) reasons.push('large-border-region-with-implausible-edge-balance')
 
-  return { accepted: reasons.length === 0, originalScore, areaRatio, borderThreshold, borderCornerCount, touchedSides, boundaryFollowingEdges, edgeBalance, convex, reasons }
+  return { accepted: reasons.length === 0, originalScore, areaRatio, borderThreshold, borderCornerCount, touchedSides, boundaryFollowingEdges, edgeBalance, convex, requiresIndependentAgreement, reasons }
 }
 
 export function selectCandidateByQuality(candidates: Array<{ points: Point[]; score: number }>) {
   const assessments = candidates.map((candidate) => assessCandidateQuality(candidate.points, candidate.score))
   const selectedIndex = assessments.findIndex((assessment) => assessment.accepted)
   return { assessments, selectedIndex }
+}
+
+export function findIndependentAgreement(selectedIndex: number, candidates: Array<{ points: Point[]; method: string }>): CandidateAgreement {
+  const selected = candidates[selectedIndex]
+  if (!selected) return { corroborated: false }
+  const selectedFamily = selected.method.startsWith('light') ? 'light' : 'edge'
+  const comparisons = candidates.flatMap((candidate, index) => {
+    const family = candidate.method.startsWith('light') ? 'light' : 'edge'
+    if (index === selectedIndex || family === selectedFamily || candidate.points.length !== selected.points.length) return []
+    const distances = selected.points.map((point, corner) => distance(point, candidate.points[corner]))
+    return [{ method: candidate.method, mean: distances.reduce((sum, value) => sum + value, 0) / distances.length, maximum: Math.max(...distances) }]
+  }).sort((a, b) => a.mean - b.mean)
+  const closest = comparisons[0]
+  if (!closest) return { corroborated: false }
+  return { corroborated: closest.mean <= .035 && closest.maximum <= .06, comparisonMethod: closest.method, meanCornerDistance: closest.mean, maximumCornerDistance: closest.maximum }
 }

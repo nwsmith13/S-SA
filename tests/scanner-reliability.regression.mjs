@@ -11,7 +11,7 @@ try {
   const page = await browser.newPage()
   await page.goto('http://127.0.0.1:4183/')
   const result = await page.evaluate(async () => {
-    const { assessCandidateQuality, selectCandidateByQuality } = await import('/src/document-processing/candidate-quality.ts')
+    const { assessCandidateQuality, findIndependentAgreement, selectCandidateByQuality } = await import('/src/document-processing/candidate-quality.ts')
     const { commitPageProcessingResult } = await import('/src/document-processing/page-identity.ts')
 
     const normal = assessCandidateQuality([
@@ -34,6 +34,15 @@ try {
       { points: twoSideBoundaryPoints, score: .848 },
       { points: correctedInterior, score: .81 },
     ])
+    const clippedPoints = [
+      { x: .108, y: 0 }, { x: .998, y: .135 }, { x: .951, y: .802 }, { x: .039, y: .792 },
+    ]
+    const clipped = assessCandidateQuality(clippedPoints, .878)
+    const clippedLoneAgreement = findIndependentAgreement(0, [{ points: clippedPoints, method: 'light-contour' }])
+    const clippedCorroboratedAgreement = findIndependentAgreement(0, [
+      { points: clippedPoints, method: 'light-contour' },
+      { points: clippedPoints.map((point, index) => ({ x: point.x + (index % 2 ? -.004 : .003), y: point.y + .002 })), method: 'edge-contour' },
+    ])
 
     let documents = [{ id: 'document-1', pages: [
       { id: 'page-a', processingToken: 'a-new', processedUrl: 'a-original' },
@@ -45,8 +54,13 @@ try {
     documents = commitPageProcessingResult(documents, 'page-a', 'a-new', (page) => ({ ...page, processedUrl: 'a-result' }))
     documents = [{ ...documents[0], pages: documents[0].pages.filter((item) => item.id !== 'page-b') }]
     documents = commitPageProcessingResult(documents, 'page-b', 'b-job', (page) => ({ ...page, processedUrl: 'wrong-deleted-result' }))
+    let sharedTokenDocuments = [{ id: 'document-shared', pages: [
+      { id: 'page-m', processingToken: 'shared-token', processedUrl: 'm-original' },
+      { id: 'page-n', processingToken: 'shared-token', processedUrl: 'n-original' },
+    ] }]
+    sharedTokenDocuments = commitPageProcessingResult(sharedTokenDocuments, 'page-m', 'shared-token', (page) => ({ ...page, processedUrl: 'm-result' }))
 
-    return { normal, angled, borderHugging, twoSideBoundary, ranked, pages: documents[0].pages }
+    return { normal, angled, borderHugging, twoSideBoundary, ranked, clipped, clippedLoneAgreement, clippedCorroboratedAgreement, pages: documents[0].pages, sharedTokenPages: sharedTokenDocuments[0].pages }
   })
 
   assert.equal(result.normal.accepted, true, '0.968 / 0.405 normal candidate was rejected')
@@ -59,7 +73,15 @@ try {
   assert.equal(result.twoSideBoundary.boundaryFollowingEdges[0]?.side, 'right', 'Right edge was not recognized as following the image boundary')
   assert.ok(result.twoSideBoundary.reasons.includes('large-region-with-edge-following-image-boundary'))
   assert.equal(result.ranked.selectedIndex, 1, 'Rejected boundary candidate outranked a plausible interior candidate')
+  assert.equal(result.clipped.accepted, true, 'Partially clipped candidate was rejected rather than confidence-gated')
+  assert.equal(result.clipped.requiresIndependentAgreement, true, 'Large two-side candidate did not require independent agreement')
+  assert.equal(result.clippedLoneAgreement.corroborated, false, 'Lone light candidate was incorrectly corroborated')
+  assert.equal(result.clippedCorroboratedAgreement.corroborated, true, 'Matching light and edge candidates were not recognized as corroborating')
   assert.deepEqual(result.pages, [{ id: 'page-a', processingToken: 'a-new', processedUrl: 'a-result' }], 'Out-of-order processing crossed stable page identity')
+  assert.deepEqual(result.sharedTokenPages, [
+    { id: 'page-m', processingToken: 'shared-token', processedUrl: 'm-result' },
+    { id: 'page-n', processingToken: 'shared-token', processedUrl: 'n-original' },
+  ], 'A matching token allowed one page result to overwrite another page ID')
   console.log(JSON.stringify(result, null, 2))
 } finally {
   await browser.close()
