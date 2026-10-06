@@ -168,34 +168,39 @@ export async function normalizeOpenCvImport(importResult: unknown): Promise<CvHa
   throw new Error('No supported OpenCV initialization shape was found', { cause: lastThenableError })
 }
 
-function importOpenCvModule(): Promise<{ imported: unknown }> {
-  checkpoint('dynamic-import:create', 'before')
-  let importPromise: Promise<unknown>
-  try {
-    importPromise = import('@techstark/opencv-js')
-    checkpoint('dynamic-import:create', 'after', { promise: shape(importPromise) })
-  } catch (error) {
-    checkpoint('dynamic-import:create', 'failure', { error: serializeDiagnosticError(error) })
-    return Promise.reject(error)
+function loadOpenCvBrowserScript(): Promise<{ imported: unknown }> {
+  const existing = (globalThis as typeof globalThis & { cv?: unknown }).cv
+  if (existing !== undefined) {
+    checkpoint('browser-script:existing-global', 'after', { cv: shape(existing) })
+    return Promise.resolve({ imported: { default: existing } })
   }
+
   return new Promise<{ imported: unknown }>((resolve, reject) => {
-    checkpoint('dynamic-import:handlers', 'before')
-    try {
-      Reflect.apply(importPromise.then, importPromise, [
-        (imported: unknown) => {
-          checkpoint('dynamic-import:fulfilled', 'after', { importType: typeof imported })
-          resolve({ imported })
-        },
-        (error: unknown) => {
-          checkpoint('dynamic-import:rejected', 'failure', { error: serializeDiagnosticError(error) })
-          reject(error)
-        },
-      ])
-      checkpoint('dynamic-import:handlers', 'after')
-    } catch (error) {
-      checkpoint('dynamic-import:handlers', 'failure', { error: serializeDiagnosticError(error) })
+    checkpoint('browser-script:create', 'before', { src: '/opencv.js' })
+    const script = document.createElement('script')
+    script.src = '/opencv.js'
+    script.async = true
+    script.dataset.ssaOpenCv = 'true'
+    script.onload = () => {
+      checkpoint('browser-script:load', 'after')
+      try {
+        const cv = (globalThis as typeof globalThis & { cv?: unknown }).cv
+        checkpoint('browser-script:global-cv', 'after', { cv: shape(cv) })
+        if (cv === undefined) throw new Error('OpenCV browser script loaded without creating globalThis.cv')
+        resolve({ imported: { default: cv } })
+      } catch (error) {
+        checkpoint('browser-script:global-cv', 'failure', { error: serializeDiagnosticError(error) })
+        reject(error)
+      }
+    }
+    script.onerror = () => {
+      const error = new Error('The OpenCV browser script could not be loaded')
+      checkpoint('browser-script:load', 'failure', { src: script.src, error: serializeDiagnosticError(error) })
       reject(error)
     }
+    checkpoint('browser-script:append', 'before')
+    document.head.append(script)
+    checkpoint('browser-script:append', 'after')
   })
 }
 
@@ -204,7 +209,7 @@ let initializationMs = 0
 
 async function initializeOpenCv(): Promise<CvHandle> {
   const started = performance.now()
-  const importedHandle = await importOpenCvModule()
+  const importedHandle = await loadOpenCvBrowserScript()
   checkpoint('normalizer:call', 'before')
   try {
     const cvHandle = await normalizeOpenCvImport(importedHandle.imported)

@@ -9,9 +9,12 @@ const browser = await chromium.launch({ executablePath: edgePath, headless: true
 
 try {
   const page = await browser.newPage()
+  const openCvRequests = []
+  page.on('request', (request) => { if (new URL(request.url()).pathname === '/opencv.js') openCvRequests.push(request.url()) })
   await page.goto('http://127.0.0.1:4181/')
+  assert.equal(openCvRequests.length, 0, 'OpenCV was downloaded before scanning requested it')
   const result = await page.evaluate(async () => {
-    const { normalizeOpenCvImport } = await import('/src/document-processing/opencv-loader.ts')
+    const { getOpenCv, normalizeOpenCvImport } = await import('/src/document-processing/opencv-loader.ts')
 
     const safariShape = Object.create(Promise.prototype)
     safariShape.Mat = function Mat() {}
@@ -46,6 +49,8 @@ try {
       callbackRuntime.onRuntimeInitialized()
     }, 0)
     const normalizedCallback = (await callbackResult).cv
+    const actualFirst = (await getOpenCv()).cv
+    const actualSecond = (await getOpenCv()).cv
 
     return {
       legacyError,
@@ -56,6 +61,8 @@ try {
       promiseIdentity: normalizedPromise === promised,
       moduleExportsIdentity: normalizedModuleExports === moduleExportsRuntime,
       callbackIdentity: normalizedCallback === callbackRuntime,
+      actualMatType: typeof actualFirst.Mat,
+      cachedActualIdentity: actualFirst === actualSecond,
     }
   })
 
@@ -67,6 +74,9 @@ try {
   assert.equal(result.promiseIdentity, true, 'Genuine Promise-shaped OpenCV export was not resolved')
   assert.equal(result.moduleExportsIdentity, true, 'module.exports OpenCV runtime was not selected')
   assert.equal(result.callbackIdentity, true, 'Runtime callback OpenCV export was not resolved')
+  assert.equal(result.actualMatType, 'function', 'Actual browser OpenCV artifact did not initialize')
+  assert.equal(result.cachedActualIdentity, true, 'Actual browser OpenCV instance was not cached')
+  assert.equal(openCvRequests.length, 1, 'Actual browser OpenCV artifact was not loaded exactly once')
   console.log(JSON.stringify(result, null, 2))
 } finally {
   await browser.close()
