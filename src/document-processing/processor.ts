@@ -1,7 +1,8 @@
 import type { DetectionResult, Point, ProcessedPage, ProcessingMode } from './types'
 import { emitDiagnostic, serializeDiagnosticError } from './diagnostics'
+import { getOpenCv, getOpenCvInitializationMs, type CvRuntime } from './opencv-loader'
 
-type Cv = Record<string, any>
+type Cv = CvRuntime
 type LoadedImage = { source: CanvasImageSource; width: number; height: number; decodeMethod: 'image-bitmap' | 'html-image'; release: () => void }
 type Candidate = { points: Point[]; confidence: number; method: DetectionResult['method'] }
 type StageStats = { contours: number; eligibleContours: number; exactCandidates: number; hullCandidates: number }
@@ -25,23 +26,6 @@ class ProcessingPipelineError extends Error {
 
 function incrementReason(diagnostics: DetectionDiagnostics, reason: string) {
   diagnostics.rejections[reason] = (diagnostics.rejections[reason] ?? 0) + 1
-}
-
-let cvPromise: Promise<Cv> | null = null
-let cvInitializationMs = 0
-
-async function getCv(): Promise<Cv> {
-  if (!cvPromise) {
-    const started = performance.now()
-    cvPromise = import('@techstark/opencv-js').then(async (module) => {
-      const candidate = (module as { default?: any }).default ?? module
-      const cv = candidate instanceof Promise ? await candidate : candidate
-      if (!cv.Mat) await new Promise<void>((resolve) => { cv.onRuntimeInitialized = resolve })
-      cvInitializationMs = performance.now() - started
-      return cv
-    })
-  }
-  return cvPromise
 }
 
 async function loadImage(file: File): Promise<LoadedImage> {
@@ -255,8 +239,8 @@ export async function detectDocument(file: File): Promise<DetectionResult> {
 
   try {
     const cvWaitStarted = performance.now()
-    const cv = await getCv()
-    const opencvInitMs = cvInitializationMs || performance.now() - cvWaitStarted
+    const cv = await getOpenCv()
+    const opencvInitMs = getOpenCvInitializationMs() || performance.now() - cvWaitStarted
     failureStage = 'original-image-decode'
     const decodeStarted = performance.now()
     image = await loadImage(file)
@@ -351,7 +335,7 @@ export async function processDocument(file: File, corners: Point[], mode: Proces
   try {
     let stageStarted = performance.now()
     checkpoint('opencv-initialization', 'before')
-    cv = await getCv()
+    cv = await getOpenCv()
     timings[stage] = performance.now() - stageStarted
     checkpoint('opencv-initialization', 'after', { elapsedMs: timings[stage] })
 
