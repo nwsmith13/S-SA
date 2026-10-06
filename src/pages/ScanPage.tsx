@@ -75,7 +75,13 @@ export function ScanPage() {
     updatePage(pageId, (page) => ({ ...page, status: 'cleaning', message: undefined, processingToken }))
     try {
       const processed = await processDocument(file, corners, mode, rotation)
-      const processedUrl = URL.createObjectURL(processed.blob)
+      let processedUrl: string
+      try {
+        processedUrl = URL.createObjectURL(processed.blob)
+      } catch (error) {
+        console.error('[S&SA processed URL failure]', JSON.stringify({ stage: 'processed-url-replacement', file: { name: file.name, type: file.type, bytes: file.size }, blobBytes: processed.blob.size, error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error) }))
+        throw error
+      }
       if (!livePageIds.current.has(pageId)) { URL.revokeObjectURL(processedUrl); return false }
       updatePage(pageId, (page) => {
         if (page.processingToken !== processingToken) { URL.revokeObjectURL(processedUrl); return page }
@@ -84,7 +90,7 @@ export function ScanPage() {
       })
       return true
     } catch (error) {
-      console.error('Document processing failed', error)
+      console.error('[S&SA page processing rejected]', error)
       updatePage(pageId, (page) => page.processingToken === processingToken ? { ...page, corners, detectedCorners, confidence: 0, status: 'attention', message: "S&SA couldn't confidently clean this page up.", processingToken: undefined } : page)
       setEditingPageId((current) => current ?? pageId)
       return false

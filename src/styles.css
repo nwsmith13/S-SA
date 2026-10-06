@@ -219,12 +219,12 @@ main { min-height: calc(100vh - 78px); }
 .edge-editor > header, .comparison-modal > header { display: flex; justify-content: space-between; gap: 25px; align-items: start; margin-bottom: 20px; }
 .edge-editor h2, .comparison-modal h2 { margin: 0; font-family: Georgia, serif; font-size: clamp(1.7rem, 3vw, 2.7rem); font-weight: 400; line-height: 1.05; }
 .modal-close { width: 44px; height: 44px; flex: 0 0 auto; border: 1px solid var(--ink); background: transparent; color: var(--ink); font-size: 1.7rem; cursor: pointer; }
-.edge-image-frame { position: relative; width: fit-content; max-width: 100%; max-height: calc(100vh - 260px); margin: 0 auto; line-height: 0; background: #24211f; }
-.edge-image-frame > img { display: block; width: auto; max-width: 100%; height: auto; max-height: calc(100vh - 260px); object-fit: contain; user-select: none; }
-.edge-overlay { position: absolute; inset: 0; touch-action: none; }
+.edge-image-frame { position: relative; width: fit-content; max-width: 100%; max-height: calc(100vh - 260px); margin: 0 auto; line-height: 0; background: #24211f; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.edge-image-frame > img { display: block; width: auto; max-width: 100%; height: auto; max-height: calc(100vh - 260px); object-fit: contain; pointer-events: none; user-select: none; -webkit-user-select: none; -webkit-user-drag: none; -webkit-touch-callout: none; }
+.edge-overlay { position: absolute; inset: 0; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .edge-overlay svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .edge-overlay polygon { fill: rgba(232,93,63,.1); stroke: #ff6848; stroke-width: .75; vector-effect: non-scaling-stroke; }
-.corner-handle { position: absolute; width: 30px; height: 30px; padding: 0; border: 4px solid #fff; border-radius: 50%; background: var(--coral); box-shadow: 0 1px 7px rgba(0,0,0,.5); transform: translate(-50%, -50%); cursor: grab; touch-action: none; }
+.corner-handle { position: absolute; width: 30px; height: 30px; padding: 0; border: 4px solid #fff; border-radius: 50%; background: var(--coral); box-shadow: 0 1px 7px rgba(0,0,0,.5); transform: translate(-50%, -50%); cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .corner-handle::after { content: ''; position: absolute; inset: -12px; }
 .edge-editor > footer { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 20px; }
 .edge-secondary-actions { display: flex; gap: 9px; }

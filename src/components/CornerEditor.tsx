@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Point } from '../document-processing/types'
 
 type CornerEditorProps = {
@@ -11,21 +11,43 @@ type CornerEditorProps = {
 
 export function CornerEditor({ imageUrl, corners, detectedCorners, onApply, onClose }: CornerEditorProps) {
   const [draft, setDraft] = useState(corners)
-  const [activeCorner, setActiveCorner] = useState<number | null>(null)
   const [applying, setApplying] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
+  const activePointer = useRef<{ pointerId: number; corner: number } | null>(null)
 
   useEffect(() => setDraft(corners), [corners])
 
-  const moveCorner = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (activeCorner === null || applying) return
-    const rect = event.currentTarget.getBoundingClientRect()
-    const next = [...draft]
-    next[activeCorner] = {
-      x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
-      y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
-    }
-    setDraft(next)
+  const startCornerDrag = (corner: number, event: React.PointerEvent<HTMLButtonElement>) => {
+    if (applying) return
+    event.preventDefault()
+    event.stopPropagation()
+    activePointer.current = { pointerId: event.pointerId, corner }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  const moveCorner = (corner: number, event: React.PointerEvent<HTMLButtonElement>) => {
+    if (applying || activePointer.current?.pointerId !== event.pointerId || activePointer.current.corner !== corner) return
+    event.preventDefault()
+    event.stopPropagation()
+    const rect = overlayRef.current?.getBoundingClientRect()
+    if (!rect) return
+    setDraft((current) => {
+      const next = [...current]
+      next[corner] = {
+        x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+        y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+      }
+      return next
+    })
+  }
+
+  const endCornerDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (activePointer.current?.pointerId !== event.pointerId) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+    activePointer.current = null
   }
 
   const apply = async () => {
@@ -52,12 +74,12 @@ export function CornerEditor({ imageUrl, corners, detectedCorners, onApply, onCl
         </header>
 
         <div className="edge-image-frame">
-          <img src={imageUrl} alt="Original document photo for edge adjustment" draggable={false} />
+          <img src={imageUrl} alt="Original document photo for edge adjustment" draggable={false} onDragStart={(event) => event.preventDefault()} />
           <div
+            ref={overlayRef}
             className="edge-overlay"
-            onPointerMove={moveCorner}
-            onPointerUp={() => setActiveCorner(null)}
-            onPointerCancel={() => setActiveCorner(null)}
+            onPointerDown={(event) => event.preventDefault()}
+            onContextMenu={(event) => event.preventDefault()}
           >
             <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
               <polygon points={draft.map((point) => `${point.x * 100},${point.y * 100}`).join(' ')} />
@@ -70,7 +92,11 @@ export function CornerEditor({ imageUrl, corners, detectedCorners, onApply, onCl
                 type="button"
                 disabled={applying}
                 aria-label={`Move corner ${index + 1}`}
-                onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); setActiveCorner(index) }}
+                onPointerDown={(event) => startCornerDrag(index, event)}
+                onPointerMove={(event) => moveCorner(index, event)}
+                onPointerUp={endCornerDrag}
+                onPointerCancel={endCornerDrag}
+                onLostPointerCapture={() => { activePointer.current = null }}
               />
             ))}
           </div>
