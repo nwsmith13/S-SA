@@ -1,6 +1,7 @@
 import type { DetectionResult, Point, ProcessedPage, ProcessingMode } from './types'
 import { emitDiagnostic, serializeDiagnosticError } from './diagnostics'
 import { getOpenCv, getOpenCvInitializationMs, type CvRuntime } from './opencv-loader'
+import { assessCandidateQuality, type CandidateQualityAssessment } from './candidate-quality'
 
 type Cv = CvRuntime
 type LoadedImage = { source: CanvasImageSource; width: number; height: number; decodeMethod: 'image-bitmap' | 'html-image'; release: () => void }
@@ -15,6 +16,8 @@ type DetectionDiagnostics = {
   rejections: Record<string, number>
   candidates: Array<{ method: Candidate['method']; score: number; areaRatio: number; corners: number[][] }>
   selected: number | null
+  candidateQuality?: CandidateQualityAssessment
+  fallback?: 'manual-adjust-edges'
 }
 
 class ProcessingPipelineError extends Error {
@@ -282,13 +285,17 @@ export async function detectDocument(file: File): Promise<DetectionResult> {
       areaRatio: Math.round(polygonArea(candidate.points) / (width * height) * 1000) / 1000,
       corners: candidate.points.map((point) => [Math.round(point.x / width * 1000) / 1000, Math.round(point.y / height * 1000) / 1000]),
     }))
-    diagnostics.selected = best ? 0 : null
+    const normalizedBest = best?.points.map((point) => ({ x: point.x / width, y: point.y / height }))
+    const candidateQuality = best && normalizedBest ? assessCandidateQuality(normalizedBest, best.confidence) : undefined
+    diagnostics.candidateQuality = candidateQuality
+    diagnostics.selected = best && candidateQuality?.accepted ? 0 : null
+    if (best && candidateQuality && !candidateQuality.accepted) diagnostics.fallback = 'manual-adjust-edges'
     const detectionMs = performance.now() - detectionStarted
     const timing = { opencvInitMs, imageDecodeMs, detectionMs, totalMs: performance.now() - totalStarted }
     emitDiagnostic('[S&SA detection diagnostics]', diagnostics)
     emitDiagnostic('[S&SA scan timing]', { stage: 'detect', method: best?.method ?? 'none', dimensions: `${width}x${height}`, ...timing })
     if (!best) throw new Error('No reasonable paper candidate found')
-    return { corners: best.points.map((point) => ({ x: point.x / width, y: point.y / height })), confidence: best.confidence, sourceWidth: width, sourceHeight: height, method: best.method, timing }
+    return { corners: normalizedBest!, confidence: candidateQuality?.accepted ? best.confidence : Math.min(.49, best.confidence), sourceWidth: width, sourceHeight: height, method: best.method, timing }
   } catch (error) {
     emitDiagnostic('[S&SA detection failure]', { stage: failureStage, error: serializeDiagnosticError(error), diagnostics }, 'error')
     throw error

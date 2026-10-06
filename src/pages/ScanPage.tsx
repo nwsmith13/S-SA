@@ -6,6 +6,7 @@ import { PageComparison } from '../components/PageComparison'
 import { PageIntro } from '../components/PageIntro'
 import { createDocumentPdf } from '../document-processing/pdf'
 import { emitDiagnostic, serializeDiagnosticError } from '../document-processing/diagnostics'
+import { commitPageProcessingResult } from '../document-processing/page-identity'
 import { detectDocument, processDocument } from '../document-processing/processor'
 import { fullImageCorners, type Point, type ProcessedPage, type ProcessingMode, type ProcessingStatus } from '../document-processing/types'
 
@@ -74,6 +75,7 @@ export function ScanPage() {
 
   const renderPage = async (pageId: string, file: File, corners: Point[], mode: ProcessingMode, rotation: number, detectedCorners: Point[], confidence: number, diagnosticContext?: 'manual-apply') => {
     const processingToken = makeId()
+    emitDiagnostic('[S&SA page identity]', { operation: 'processing-started', pageId, processingToken, file: { name: file.name, type: file.type, bytes: file.size, lastModified: file.lastModified }, mode, rotation })
     updatePage(pageId, (page) => ({ ...page, status: 'cleaning', message: undefined, processingToken }))
     try {
       if (diagnosticContext) emitDiagnostic('[S&SA apply checkpoint]', { operation: 'process-document', phase: 'before', normalizedCorners: corners, mode, rotation })
@@ -89,13 +91,19 @@ export function ScanPage() {
         throw error
       }
       if (diagnosticContext) emitDiagnostic('[S&SA apply checkpoint]', { operation: 'live-page-check', phase: 'before', pageIsLive: livePageIds.current.has(pageId) })
-      if (!livePageIds.current.has(pageId)) { URL.revokeObjectURL(processedUrl); return false }
+      if (!livePageIds.current.has(pageId)) {
+        emitDiagnostic('[S&SA page identity]', { operation: 'processing-discarded', reason: 'page-removed', pageId, processingToken })
+        URL.revokeObjectURL(processedUrl); return false
+      }
       if (diagnosticContext) emitDiagnostic('[S&SA apply checkpoint]', { operation: 'processed-state-replacement', phase: 'before' })
-      updatePage(pageId, (page) => {
-        if (page.processingToken !== processingToken) { URL.revokeObjectURL(processedUrl); return page }
+      setDocuments((existing) => commitPageProcessingResult(existing, pageId, processingToken, (page) => {
         if (page.processedUrl) URL.revokeObjectURL(page.processedUrl)
         return { ...page, processed, processedUrl, corners, detectedCorners, confidence, mode, rotation, status: 'ready', message: undefined, processingToken: undefined }
-      })
+      }, (reason) => {
+        URL.revokeObjectURL(processedUrl)
+        emitDiagnostic('[S&SA page identity]', { operation: 'processing-discarded', reason, pageId, processingToken }, 'warn')
+      }))
+      emitDiagnostic('[S&SA page identity]', { operation: 'processing-commit-requested', pageId, processingToken })
       if (diagnosticContext) emitDiagnostic('[S&SA apply checkpoint]', { operation: 'processed-state-replacement', phase: 'after' })
       return true
     } catch (error) {
