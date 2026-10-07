@@ -19,7 +19,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
   page.on('console', (message) => {
     if (message.text().startsWith('[S&SA scan timing]')) timing.push(message.text())
-    if (message.text().startsWith('[S&SA detection diagnostics]') || message.text().startsWith('[S&SA detection UI result]') || message.text().startsWith('[S&SA processing diagnostics]')) diagnostics.push(message.text())
+    if (message.text().startsWith('[S&SA detection diagnostics]') || message.text().startsWith('[S&SA detection UI result]') || message.text().startsWith('[S&SA CornerEditor geometry]') || message.text().startsWith('[S&SA GEOMETRY WARNING]') || message.text().startsWith('[S&SA processing diagnostics]')) diagnostics.push(message.text())
   })
   await page.goto('http://127.0.0.1:4178/scan?diagnostics=1')
   const diagnosticPanel = page.locator('.diagnostics-panel')
@@ -68,6 +68,15 @@ try {
   assert.equal(typeof detectionPayload.result.candidateConfidence, 'number')
   assert.equal(typeof detectionPayload.result.agreement.corroborated, 'boolean')
   assert.equal(typeof detectionPayload.file.lastModified, 'number')
+  assert.equal(detectionPayload.result.geometryTrace.detectorCandidate.corners.length, 4)
+  assert.equal(detectionPayload.result.geometryTrace.orderedCandidate.corners[0].label, 'TL')
+  assert.equal(typeof detectionPayload.result.geometryTrace.transition.cornerOrderChanged, 'boolean')
+  const acceptedCandidate = detectionPayload.candidates.find((candidate) => candidate.accepted)
+  assert.equal(typeof acceptedCandidate.contextMeasurements.boundingBox.widthRatio, 'number')
+  assert.equal(typeof acceptedCandidate.contextMeasurements.boundingBox.heightRatio, 'number')
+  assert.equal(typeof acceptedCandidate.contextMeasurements.centroid.x, 'number')
+  assert.equal(acceptedCandidate.contextMeasurements.outwardEdgeEvidence.length, 4)
+  assert.equal(typeof acceptedCandidate.contextMeasurements.imageAreaOutsideCandidatePercent, 'number')
 
   const expectedForeground = [{ x: .10, y: .18 }, { x: .80, y: .18 }, { x: .83, y: .84 }, { x: .09, y: .84 }]
   const distances = corners.map((point, index) => Math.hypot(point.x - expectedForeground[index].x, point.y - expectedForeground[index].y))
@@ -75,6 +84,17 @@ try {
   assert.ok(distances.filter((value) => value < .08).length >= 3, 'Fewer than three corners are close to the foreground document')
 
   const processedBefore = await page.getByRole('button', { name: 'Review page 1' }).locator('img').getAttribute('src')
+  await page.waitForTimeout(100)
+  const editorInputEvent = diagnostics.find((entry) => entry.startsWith('[S&SA CornerEditor geometry]') && entry.includes('"stage":"CornerEditor-input"'))
+  const renderedHandlesEvent = diagnostics.find((entry) => entry.startsWith('[S&SA CornerEditor geometry]') && entry.includes('"stage":"rendered-handles"'))
+  assert.ok(editorInputEvent && renderedHandlesEvent, 'CornerEditor geometry stages were not emitted')
+  const editorInputPayload = JSON.parse(editorInputEvent.slice(editorInputEvent.indexOf('{')))
+  const renderedHandlesPayload = JSON.parse(renderedHandlesEvent.slice(renderedHandlesEvent.indexOf('{')))
+  assert.equal(editorInputPayload.cornerEditorInput.corners.length, 4)
+  assert.equal(renderedHandlesPayload.intrinsicImage.width > 0, true)
+  assert.equal(renderedHandlesPayload.renderedImageBounds.width > 0, true)
+  assert.equal(renderedHandlesPayload.renderedHandles.corners.length, 4)
+  assert.deepEqual(renderedHandlesPayload.renderedHandles.corners.map((corner) => corner.label), ['TL', 'TR', 'BR', 'BL'])
   const editorProtection = await page.locator('.edge-image-frame').evaluate((element) => ({
     userSelect: getComputedStyle(element).userSelect,
     webkitUserSelect: getComputedStyle(element).getPropertyValue('-webkit-user-select'),

@@ -8,6 +8,7 @@ import { createDocumentPdf } from '../document-processing/pdf'
 import { emitDiagnostic, serializeDiagnosticError } from '../document-processing/diagnostics'
 import { commitPageProcessingResult } from '../document-processing/page-identity'
 import { detectDocument, processDocument, type DetectionDiagnosticContext } from '../document-processing/processor'
+import { describeGeometry, describeGeometryTransition } from '../document-processing/geometry-diagnostics'
 import { fullImageCorners, type Point, type ProcessedPage, type ProcessingMode, type ProcessingStatus } from '../document-processing/types'
 
 type ScanPage = {
@@ -67,6 +68,8 @@ export function ScanPage() {
   const totalPages = allPages.length
   const processing = allPages.some((page) => page.status !== 'ready')
   const editingPage = allPages.find((page) => page.id === editingPageId)
+  const editingDocument = filledDocuments.find((document) => document.pages.some((page) => page.id === editingPageId))
+  const editingPageIndex = editingDocument?.pages.findIndex((page) => page.id === editingPageId) ?? -1
   const reviewingPage = allPages.find((page) => page.id === reviewingPageId)
 
   const updatePage = (pageId: string, update: (page: ScanPage) => ScanPage) => {
@@ -124,7 +127,9 @@ export function ScanPage() {
     try {
       const detection = await detectDocument(page.file, identity)
       if (detection.confidence < .5) {
-        emitDiagnostic('[S&SA detection UI result]', { ...identity, resultState: 'manual-adjust-edges', editorCorners: detection.corners, cornerSource: 'candidate', selectedCandidateMethod: detection.method, candidateConfidence: detection.confidence })
+        const transition = describeGeometryTransition(detection.orderedCorners, detection.corners)
+        emitDiagnostic('[S&SA detection UI result]', { ...identity, resultState: 'manual-adjust-edges', editorCorners: detection.corners, cornerSource: 'candidate', selectedCandidateMethod: detection.method, candidateConfidence: detection.confidence, geometry: { orderedCandidate: describeGeometry(detection.orderedCorners), uiHandoff: describeGeometry(detection.corners), transition } })
+        if (transition.cornerOrderChanged || transition.becameNonConvex || transition.becameSelfIntersecting) emitDiagnostic('[S&SA GEOMETRY WARNING]', { ...identity, transition: 'ordered-candidate-to-ui-handoff', analysis: transition, from: describeGeometry(detection.orderedCorners), to: describeGeometry(detection.corners) }, 'error')
         updatePage(page.id, (current) => ({ ...current, corners: detection.corners, detectedCorners: detection.corners, confidence: detection.confidence, status: 'attention', message: 'Check the edges before cleaning up this page.' }))
         setEditingPageId((current) => current ?? page.id)
         return
@@ -134,7 +139,7 @@ export function ScanPage() {
     } catch (error) {
       emitDiagnostic('[S&SA detection fallback]', { stage: 'prepare-page', error: serializeDiagnosticError(error) }, 'warn')
       const corners = fullImageCorners()
-      emitDiagnostic('[S&SA detection UI result]', { ...identity, resultState: 'full-image-fallback', editorCorners: corners, cornerSource: 'full-image', selectedCandidateMethod: null, candidateConfidence: 0 })
+      emitDiagnostic('[S&SA detection UI result]', { ...identity, resultState: 'full-image-fallback', editorCorners: corners, cornerSource: 'full-image', selectedCandidateMethod: null, candidateConfidence: 0, geometry: { uiHandoff: describeGeometry(corners) } })
       updatePage(page.id, (current) => ({ ...current, corners, detectedCorners: corners, confidence: 0, status: 'attention', message: "S&SA couldn't find the paper automatically." }))
       setEditingPageId((current) => current ?? page.id)
     }
@@ -281,7 +286,7 @@ export function ScanPage() {
 
       {view === 'summary' && <ScanSummary documents={filledDocuments} totalPages={totalPages} pdfs={pdfs} creatingPdfs={creatingPdfs} onCreatePdfs={createPdfs} onEdit={() => setView('review')} />}
 
-      {editingPage && <CornerEditor imageUrl={editingPage.originalUrl} corners={editingPage.corners} detectedCorners={editingPage.detectedCorners} onClose={() => setEditingPageId(null)} onApply={(corners) => applyManualEdges(editingPage, corners)} />}
+      {editingPage && <CornerEditor imageUrl={editingPage.originalUrl} corners={editingPage.corners} detectedCorners={editingPage.detectedCorners} diagnosticIdentity={{ pageId: editingPage.id, documentId: editingDocument?.id, pageIndex: Math.max(0, editingPageIndex), pageNumber: Math.max(1, editingPageIndex + 1) }} uiHandoffCorners={editingPage.detectedCorners} onClose={() => setEditingPageId(null)} onApply={(corners) => applyManualEdges(editingPage, corners)} />}
       {reviewingPage && <PageComparison pageNumber={(currentDocument?.pages.findIndex((page) => page.id === reviewingPage.id) ?? 0) + 1} originalUrl={reviewingPage.originalUrl} processedUrl={reviewingPage.processedUrl} needsAttention={reviewingPage.status === 'attention'} onClose={() => setReviewingPageId(null)} onAdjust={() => { setReviewingPageId(null); setEditingPageId(reviewingPage.id) }} />}
 
       <input ref={cameraInput} className="visually-hidden" type="file" accept={acceptedImages} capture="environment" onChange={handleInput} />

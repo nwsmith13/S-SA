@@ -16,6 +16,8 @@ export type DetectionResult = {
   sourceWidth: number
   sourceHeight: number
   method: 'light-contour' | 'edge-contour' | 'edge-hull'
+  detectorCorners: Point[]
+  orderedCorners: Point[]
   timing: {
     opencvInitMs: number
     imageDecodeMs: number

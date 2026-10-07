@@ -1,22 +1,67 @@
 import { useEffect, useRef, useState } from 'react'
+import { emitDiagnostic } from '../document-processing/diagnostics'
+import { describeGeometry, describeGeometryTransition } from '../document-processing/geometry-diagnostics'
 import type { Point } from '../document-processing/types'
 
 type CornerEditorProps = {
   imageUrl: string
   corners: Point[]
   detectedCorners: Point[]
+  diagnosticIdentity: { pageId: string; documentId?: string; pageIndex: number; pageNumber: number }
+  uiHandoffCorners: Point[]
   onApply: (corners: Point[]) => Promise<boolean>
   onClose: () => void
 }
 
-export function CornerEditor({ imageUrl, corners, detectedCorners, onApply, onClose }: CornerEditorProps) {
+export function CornerEditor({ imageUrl, corners, detectedCorners, diagnosticIdentity, uiHandoffCorners, onApply, onClose }: CornerEditorProps) {
   const [draft, setDraft] = useState(corners)
   const [applying, setApplying] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [imageLoaded, setImageLoaded] = useState(false)
   const overlayRef = useRef<HTMLDivElement>(null)
+  const imageRef = useRef<HTMLImageElement>(null)
+  const lastRenderDiagnostic = useRef('')
   const activePointer = useRef<{ pointerId: number; corner: number } | null>(null)
 
   useEffect(() => setDraft(corners), [corners])
+
+  useEffect(() => {
+    const transition = describeGeometryTransition(uiHandoffCorners, corners)
+    const inputGeometry = describeGeometry(corners)
+    emitDiagnostic('[S&SA CornerEditor geometry]', { ...diagnosticIdentity, stage: 'CornerEditor-input', uiHandoff: describeGeometry(uiHandoffCorners), cornerEditorInput: inputGeometry, transition })
+    if (transition.cornerOrderChanged || transition.becameNonConvex || transition.becameSelfIntersecting || !inputGeometry.convex || inputGeometry.selfIntersecting) {
+      emitDiagnostic('[S&SA GEOMETRY WARNING]', { ...diagnosticIdentity, transition: 'ui-handoff-to-CornerEditor-input', analysis: transition, from: describeGeometry(uiHandoffCorners), to: inputGeometry }, 'error')
+    }
+  }, [corners, diagnosticIdentity.documentId, diagnosticIdentity.pageId, diagnosticIdentity.pageIndex, diagnosticIdentity.pageNumber, uiHandoffCorners])
+
+  useEffect(() => {
+    const emitRenderedGeometry = () => {
+      const image = imageRef.current; const overlay = overlayRef.current
+      if (!image || !overlay || !image.complete || !image.naturalWidth) return
+      const bounds = overlay.getBoundingClientRect()
+      if (!bounds.width || !bounds.height) return
+      const renderedPoints = corners.map((point) => ({ x: bounds.left + point.x * bounds.width, y: bounds.top + point.y * bounds.height }))
+      const signature = JSON.stringify([image.naturalWidth, image.naturalHeight, bounds.left, bounds.top, bounds.width, bounds.height, renderedPoints])
+      if (signature === lastRenderDiagnostic.current) return
+      lastRenderDiagnostic.current = signature
+      const renderedGeometry = describeGeometry(renderedPoints)
+      emitDiagnostic('[S&SA CornerEditor geometry]', {
+        ...diagnosticIdentity, stage: 'rendered-handles', intrinsicImage: { width: image.naturalWidth, height: image.naturalHeight },
+        renderedImageBounds: { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom, width: bounds.width, height: bounds.height },
+        cornerEditorInput: describeGeometry(corners), renderedHandles: renderedGeometry,
+      })
+      const inputGeometry = describeGeometry(corners)
+      if ((inputGeometry.convex && !renderedGeometry.convex) || (!inputGeometry.selfIntersecting && renderedGeometry.selfIntersecting)) {
+        emitDiagnostic('[S&SA GEOMETRY WARNING]', { ...diagnosticIdentity, transition: 'CornerEditor-input-to-rendered-handle-coordinates', from: inputGeometry, to: renderedGeometry }, 'error')
+      }
+    }
+    const frame = overlayRef.current
+    const observer = typeof ResizeObserver === 'function' && frame ? new ResizeObserver(emitRenderedGeometry) : null
+    if (observer && frame) observer.observe(frame)
+    window.addEventListener('resize', emitRenderedGeometry)
+    const frameId = requestAnimationFrame(emitRenderedGeometry)
+    return () => { observer?.disconnect(); window.removeEventListener('resize', emitRenderedGeometry); cancelAnimationFrame(frameId) }
+  }, [corners, diagnosticIdentity.documentId, diagnosticIdentity.pageId, diagnosticIdentity.pageIndex, diagnosticIdentity.pageNumber, imageLoaded])
 
   const startCornerDrag = (corner: number, event: React.PointerEvent<HTMLButtonElement>) => {
     if (applying) return
@@ -74,7 +119,7 @@ export function CornerEditor({ imageUrl, corners, detectedCorners, onApply, onCl
         </header>
 
         <div className="edge-image-frame">
-          <img src={imageUrl} alt="Original document photo for edge adjustment" draggable={false} onDragStart={(event) => event.preventDefault()} />
+          <img ref={imageRef} src={imageUrl} alt="Original document photo for edge adjustment" draggable={false} onLoad={() => setImageLoaded(true)} onDragStart={(event) => event.preventDefault()} />
           <div
             ref={overlayRef}
             className="edge-overlay"

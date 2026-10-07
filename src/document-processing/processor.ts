@@ -2,11 +2,12 @@ import type { DetectionResult, Point, ProcessedPage, ProcessingMode } from './ty
 import { emitDiagnostic, serializeDiagnosticError } from './diagnostics'
 import { getOpenCv, getOpenCvInitializationMs, type CvRuntime } from './opencv-loader'
 import { classifyContourArea, findIndependentAgreement, selectCandidateByQuality, shouldAutoApplyCandidate, type CandidateAgreement, type CandidateQualityAssessment } from './candidate-quality'
+import { describeGeometry, describeGeometryTransition } from './geometry-diagnostics'
 
 type Cv = CvRuntime
 export type DetectionDiagnosticContext = { pageId: string; documentId?: string; pageIndex: number; pageNumber: number }
 type LoadedImage = { source: CanvasImageSource; width: number; height: number; decodeMethod: 'image-bitmap' | 'html-image'; release: () => void }
-type Candidate = { points: Point[]; confidence: number; method: DetectionResult['method'] }
+type Candidate = { points: Point[]; detectorPoints: Point[]; confidence: number; method: DetectionResult['method'] }
 type SmallContourEvaluation = { contourIndex: number; areaRatio: number; exactCandidate: boolean; hullCandidate: boolean }
 type StageStats = { contours: number; eligibleContours: number; smallContoursAdmitted: number; smallContourEvaluations: SmallContourEvaluation[]; exactCandidates: number; hullCandidates: number; maxAreaRatio: number; above2Percent: number; above4Percent: number; above6Percent: number; rejectedBelow4Percent: number; rejectedBelow8Percent: number }
 type DetectionDiagnostics = {
@@ -17,14 +18,14 @@ type DetectionDiagnostics = {
   canny?: { median: number; low: number; high: number; otsu: number }
   stages: { light: StageStats; edge: StageStats; lines: { count: number; candidate: boolean } }
   rejections: Record<string, number>
-  candidates: Array<{ method: Candidate['method']; score: number; areaRatio: number; corners: number[][]; accepted: boolean; rejectionReasons: string[]; boundaryFollowingEdges: CandidateQualityAssessment['boundaryFollowingEdges']; requiresIndependentAgreement: boolean; agreement: CandidateAgreement }>
+  candidates: Array<{ method: Candidate['method']; score: number; areaRatio: number; corners: number[][]; accepted: boolean; rejectionReasons: string[]; boundaryFollowingEdges: CandidateQualityAssessment['boundaryFollowingEdges']; requiresIndependentAgreement: boolean; agreement: CandidateAgreement; contextMeasurements?: ReturnType<typeof measureCandidateContext> }>
   selected: number | null
   candidateQuality?: CandidateQualityAssessment
   fallback?: 'manual-adjust-edges'
   selectionDecision?: { highestScoreIndex: number | null; selectedIndex: number | null; rejectedHigherCandidates: number; behavior: 'auto-apply' | 'manual-adjust-edges' }
   methodAgreement?: CandidateAgreement
   confidenceDecision?: { originalScore: number; returnedConfidence: number; requiresIndependentAgreement: boolean; independentCandidateFound: boolean; corroborated: boolean; materialConflict: boolean; reason: 'geometry-and-confidence' | 'independent-method-agreement' | 'independent-method-conflict' | 'required-agreement-missing' | 'candidate-quality-rejected'; behavior: 'auto-apply' | 'manual-adjust-edges' }
-  result?: { state: 'auto-apply' | 'manual-adjust-edges' | 'full-image-fallback'; editorCorners: Point[] | null; cornerSource: 'candidate' | 'full-image' | 'not-required'; selectedCandidateMethod: Candidate['method'] | null; selectedCandidateIndex: number | null; candidateConfidence: number; agreement: CandidateAgreement | null }
+  result?: { state: 'auto-apply' | 'manual-adjust-edges' | 'full-image-fallback'; editorCorners: Point[] | null; cornerSource: 'candidate' | 'full-image' | 'not-required'; selectedCandidateMethod: Candidate['method'] | null; selectedCandidateIndex: number | null; candidateConfidence: number; agreement: CandidateAgreement | null; geometryTrace?: { detectorCandidate: ReturnType<typeof describeGeometry>; orderedCandidate: ReturnType<typeof describeGeometry>; transition: ReturnType<typeof describeGeometryTransition> } }
 }
 
 class ProcessingPipelineError extends Error {
@@ -111,6 +112,68 @@ function polygonArea(points: Point[]) {
   }, 0) / 2)
 }
 
+function pointInPolygon(point: Point, polygon: Point[]) {
+  let inside = false
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
+    const a = polygon[index]; const b = polygon[previous]
+    if ((a.y > point.y) !== (b.y > point.y) && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) inside = !inside
+  }
+  return inside
+}
+
+function outwardEdgeEvidence(edgeMask: any, points: Point[]) {
+  const centroid = points.reduce((sum, point) => ({ x: sum.x + point.x / 4, y: sum.y + point.y / 4 }), { x: 0, y: 0 })
+  const edgeLabels = ['top', 'right', 'bottom', 'left']
+  return points.map((point, index) => {
+    const next = points[(index + 1) % 4]
+    const midpoint = { x: (point.x + next.x) / 2, y: (point.y + next.y) / 2 }
+    const vector = { x: midpoint.x - centroid.x, y: midpoint.y - centroid.y }
+    const limits = [
+      vector.x > 0 ? (edgeMask.cols - 1 - midpoint.x) / vector.x : vector.x < 0 ? -midpoint.x / vector.x : Number.POSITIVE_INFINITY,
+      vector.y > 0 ? (edgeMask.rows - 1 - midpoint.y) / vector.y : vector.y < 0 ? -midpoint.y / vector.y : Number.POSITIVE_INFINITY,
+    ].filter((value) => value > 0 && Number.isFinite(value))
+    const limit = Math.min(...limits)
+    if (!Number.isFinite(limit) || limit <= 1) return { edge: edgeLabels[index], strongEvidenceContinuesOutward: false, evidenceRatio: 0 }
+    let hits = 0; const samples = 32
+    for (let sample = 1; sample <= samples; sample += 1) {
+      const scale = 1 + (limit - 1) * sample / samples
+      const x = Math.max(0, Math.min(edgeMask.cols - 1, Math.round(centroid.x + vector.x * scale)))
+      const y = Math.max(0, Math.min(edgeMask.rows - 1, Math.round(centroid.y + vector.y * scale)))
+      let hit = false
+      for (let offsetY = -1; offsetY <= 1 && !hit; offsetY += 1) for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+        const px = Math.max(0, Math.min(edgeMask.cols - 1, x + offsetX)); const py = Math.max(0, Math.min(edgeMask.rows - 1, y + offsetY))
+        if (edgeMask.ucharPtr(py, px)[0] > 0) { hit = true; break }
+      }
+      if (hit) hits += 1
+    }
+    const evidenceRatio = hits / samples
+    return { edge: edgeLabels[index], strongEvidenceContinuesOutward: evidenceRatio >= .08, evidenceRatio }
+  })
+}
+
+function measureCandidateContext(index: number, candidates: Candidate[], normalizedCandidates: Point[][], assessments: CandidateQualityAssessment[], edgeMask: any, width: number, height: number) {
+  const points = normalizedCandidates[index]
+  const xs = points.map((point) => point.x); const ys = points.map((point) => point.y)
+  const areaRatio = polygonArea(points)
+  const enclosingCandidate = normalizedCandidates.map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
+    .filter(({ candidate, candidateIndex }) => candidateIndex !== index && assessments[candidateIndex].accepted && polygonArea(candidate) > areaRatio * 1.08 && points.every((point) => pointInPolygon(point, candidate)))
+    .sort((a, b) => polygonArea(a.candidate) - polygonArea(b.candidate))[0]
+  return {
+    boundingBox: { widthRatio: Math.max(...xs) - Math.min(...xs), heightRatio: Math.max(...ys) - Math.min(...ys) },
+    centroid: points.reduce((sum, point) => ({ x: sum.x + point.x / 4, y: sum.y + point.y / 4 }), { x: 0, y: 0 }),
+    edgeDistanceFromImageBoundary: {
+      top: (points[0].y + points[1].y) / 2, right: 1 - (points[1].x + points[2].x) / 2,
+      bottom: 1 - (points[2].y + points[3].y) / 2, left: (points[3].x + points[0].x) / 2,
+    },
+    imageAreaOutsideCandidatePercent: (1 - areaRatio) * 100,
+    outwardEdgeEvidence: outwardEdgeEvidence(edgeMask, candidates[index].points),
+    enclosingLargerPlausibleCandidate: enclosingCandidate ? {
+      index: enclosingCandidate.candidateIndex, method: candidates[enclosingCandidate.candidateIndex].method,
+      score: candidates[enclosingCandidate.candidateIndex].confidence, areaRatio: polygonArea(enclosingCandidate.candidate),
+    } : null,
+  }
+}
+
 function isFullImageBoundary(points: Point[], width: number, height: number) {
   const normalized = points.map((point) => ({ x: point.x / width, y: point.y / height }))
   const areaRatio = polygonArea(points) / (width * height)
@@ -146,7 +209,7 @@ function scoreCandidate(points: Point[], width: number, height: number, contourA
   const inset = Math.min(...normalized.flatMap((point) => [point.x, point.y, 1 - point.x, 1 - point.y]))
   const methodWeight = method === 'light-contour' ? .1 : method === 'edge-contour' ? .06 : 0
   const confidence = Math.max(.2, Math.min(.97, .32 + areaScore * .23 + edgeBalance * .17 + rectangularFill * .16 + Math.min(.08, Math.max(0, inset)) + methodWeight))
-  return { points: ordered, confidence, method }
+  return { points: ordered, detectorPoints: points.map((point) => ({ ...point })), confidence, method }
 }
 
 function matPoints(mat: any): Point[] {
@@ -327,6 +390,9 @@ export async function detectDocument(file: File, identity: DetectionDiagnosticCo
       boundaryFollowingEdges: qualitySelection.assessments[index].boundaryFollowingEdges,
       requiresIndependentAgreement: qualitySelection.assessments[index].requiresIndependentAgreement,
       agreement: agreements[index],
+      contextMeasurements: qualitySelection.assessments[index].accepted
+        ? measureCandidateContext(index, candidates, normalizedCandidates, qualitySelection.assessments, edgeClosed, width, height)
+        : undefined,
     }))
     diagnostics.candidateQuality = candidateQuality
     diagnostics.methodAgreement = methodAgreement
@@ -342,6 +408,11 @@ export async function detectDocument(file: File, identity: DetectionDiagnosticCo
     }
     if (best && !autoApply) diagnostics.fallback = 'manual-adjust-edges'
     const fullImage = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]
+    const detectorBest = bestIndex >= 0 ? best!.detectorPoints.map((point) => ({ x: point.x / width, y: point.y / height })) : undefined
+    const geometryTransition = detectorBest && normalizedBest ? describeGeometryTransition(detectorBest, normalizedBest) : undefined
+    if (!autoApply && geometryTransition && (geometryTransition.cornerOrderChanged || geometryTransition.becameNonConvex || geometryTransition.becameSelfIntersecting)) {
+      emitDiagnostic('[S&SA GEOMETRY WARNING]', { ...identity, transition: 'detector-candidate-to-ordered-candidate', analysis: geometryTransition, from: describeGeometry(detectorBest!), to: describeGeometry(normalizedBest!) }, 'error')
+    }
     diagnostics.result = best ? {
       state: autoApply ? 'auto-apply' : 'manual-adjust-edges',
       editorCorners: autoApply ? null : normalizedBest!,
@@ -350,6 +421,9 @@ export async function detectDocument(file: File, identity: DetectionDiagnosticCo
       selectedCandidateIndex: bestIndex,
       candidateConfidence: best.confidence,
       agreement: methodAgreement,
+      geometryTrace: detectorBest && normalizedBest && geometryTransition ? {
+        detectorCandidate: describeGeometry(detectorBest), orderedCandidate: describeGeometry(normalizedBest), transition: geometryTransition,
+      } : undefined,
     } : {
       state: 'full-image-fallback', editorCorners: fullImage, cornerSource: 'full-image', selectedCandidateMethod: null,
       selectedCandidateIndex: null, candidateConfidence: 0, agreement: null,
@@ -359,7 +433,7 @@ export async function detectDocument(file: File, identity: DetectionDiagnosticCo
     emitDiagnostic('[S&SA detection diagnostics]', diagnostics)
     emitDiagnostic('[S&SA scan timing]', { stage: 'detect', method: best?.method ?? 'none', dimensions: `${width}x${height}`, ...timing })
     if (!best) throw new Error('No reasonable paper candidate found')
-    return { corners: normalizedBest!, confidence: returnedConfidence, sourceWidth: width, sourceHeight: height, method: best.method, timing }
+    return { corners: normalizedBest!, confidence: returnedConfidence, sourceWidth: width, sourceHeight: height, method: best.method, timing, detectorCorners: detectorBest!, orderedCorners: normalizedBest! }
   } catch (error) {
     diagnostics.result ??= {
       state: 'full-image-fallback', editorCorners: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }], cornerSource: 'full-image',
