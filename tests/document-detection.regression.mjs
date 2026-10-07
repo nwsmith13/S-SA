@@ -176,7 +176,29 @@ try {
   assert.equal(await safariFallbackPage.getByRole('status').innerText(), 'Select the text below and copy it manually.', 'Clipboard fallback was not offered')
   assert.equal(await safariFallbackPage.locator('#scan-diagnostics-copy').evaluate((element) => element.selectionStart === 0 && element.selectionEnd === element.value.length), true, 'Manual-copy fallback did not select the diagnostics')
 
-  console.log(JSON.stringify({ status: await page.locator('.page-status').innerText(), corners, area, apply: 'passed', fourCornerTouchDrag: 'passed', selectionProtection: 'passed', safariFallback: 'passed', diagnosticEvents: diagnostics.length, timing }, null, 2))
+  const brokenOuterRegression = await page.evaluate(async () => {
+    const canvas = document.createElement('canvas'); canvas.width = 1200; canvas.height = 1600
+    const context = canvas.getContext('2d')
+    context.fillStyle = '#4a4742'; context.fillRect(0, 0, canvas.width, canvas.height)
+    context.strokeStyle = '#cbc8bf'; context.lineWidth = 4; context.setLineDash([72, 8]); context.lineJoin = 'round'
+    context.beginPath(); context.moveTo(150, 180); context.lineTo(1050, 220); context.lineTo(1000, 1400); context.lineTo(180, 1360); context.closePath(); context.stroke()
+    context.setLineDash([]); context.strokeStyle = '#f5f3ed'; context.lineWidth = 8
+    context.beginPath(); context.moveTo(330, 440); context.lineTo(850, 450); context.lineTo(830, 1120); context.lineTo(350, 1110); context.closePath(); context.stroke()
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
+    const file = new File([blob], 'broken-outer-page.png', { type: 'image/png', lastModified: 1 })
+    const { detectDocument } = await import('/src/document-processing/processor.ts')
+    const { getDiagnosticEvents } = await import('/src/document-processing/diagnostics.ts')
+    await detectDocument(file, { pageId: 'broken-outer-page', documentId: 'regression', pageIndex: 0, pageNumber: 1 })
+    const event = [...getDiagnosticEvents()].reverse().find((entry) => entry.label === '[S&SA detection diagnostics]' && entry.payload.identity.pageId === 'broken-outer-page')
+    return event.payload
+  })
+  const standardInternalCandidates = brokenOuterRegression.candidates.filter((candidate) => ['light-contour', 'edge-contour'].includes(candidate.method) && candidate.areaRatio > .12 && candidate.areaRatio < .35)
+  const bridgedOuterCandidates = brokenOuterRegression.candidates.filter((candidate) => candidate.method === 'edge-bridged-contour' && candidate.areaRatio > .45)
+  assert.ok(standardInternalCandidates.length > 0, 'Regression no longer demonstrates the pre-existing internal quadrilateral')
+  assert.ok(bridgedOuterCandidates.length > 0, 'Bridged-edge generation did not propose the weak outer page boundary')
+  assert.ok(brokenOuterRegression.candidates.some((candidate) => candidate.areaRatio < .35) && brokenOuterRegression.candidates.some((candidate) => candidate.areaRatio > .45), 'Candidate pool did not retain both internal and outer interpretations')
+
+  console.log(JSON.stringify({ status: await page.locator('.page-status').innerText(), corners, area, apply: 'passed', fourCornerTouchDrag: 'passed', selectionProtection: 'passed', safariFallback: 'passed', brokenOuterRegression: { standardInternalCandidates: standardInternalCandidates.map((candidate) => ({ method: candidate.method, areaRatio: candidate.areaRatio })), bridgedOuterCandidates: bridgedOuterCandidates.map((candidate) => ({ method: candidate.method, areaRatio: candidate.areaRatio })) }, diagnosticEvents: diagnostics.length, timing }, null, 2))
 } finally {
   await browser.close()
   await server.close()

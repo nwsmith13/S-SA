@@ -15,7 +15,7 @@ export type DetectionResult = {
   confidence: number
   sourceWidth: number
   sourceHeight: number
-  method: 'light-contour' | 'edge-contour' | 'edge-hull'
+  method: 'light-contour' | 'edge-contour' | 'edge-bridged-contour' | 'edge-hull'
   detectorCorners: Point[]
   orderedCorners: Point[]
   timing: {

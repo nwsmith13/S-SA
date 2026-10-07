@@ -18,7 +18,7 @@ type DetectionDiagnostics = {
   decode?: { method: LoadedImage['decodeMethod']; width: number; height: number }
   workingDimensions?: string
   canny?: { median: number; low: number; high: number; otsu: number }
-  stages: { light: StageStats; edge: StageStats; lines: { count: number; candidate: boolean } }
+  stages: { light: StageStats; edge: StageStats; edgeBridged: StageStats & { kernelSize: number }; lines: { count: number; candidate: boolean } }
   rejections: Record<string, number>
   candidates: Array<{ method: Candidate['method']; score: number; areaRatio: number; corners: number[][]; accepted: boolean; rejectionReasons: string[]; boundaryFollowingEdges: CandidateQualityAssessment['boundaryFollowingEdges']; requiresIndependentAgreement: boolean; agreement: CandidateAgreement; contextMeasurements?: ReturnType<typeof measureCandidateContext> }>
   pairwiseAcceptedCandidateComparisons?: ReturnType<typeof compareCandidateStructures>[]
@@ -232,7 +232,7 @@ function extremeQuad(points: Point[]): Point[] | null {
   return orderCorners(quad)
 }
 
-function candidatesFromMask(cv: Cv, mask: any, width: number, height: number, method: 'light-contour' | 'edge-contour', diagnostics: DetectionDiagnostics, stats: StageStats) {
+function candidatesFromMask(cv: Cv, mask: any, width: number, height: number, method: 'light-contour' | 'edge-contour' | 'edge-bridged-contour', diagnostics: DetectionDiagnostics, stats: StageStats) {
   const candidates: Candidate[] = []
   const contours = new cv.MatVector()
   const hierarchy = new cv.Mat()
@@ -320,6 +320,7 @@ export async function detectDocument(file: File, identity: DetectionDiagnosticCo
     stages: {
       light: { contours: 0, eligibleContours: 0, smallContoursAdmitted: 0, smallContourEvaluations: [], exactCandidates: 0, hullCandidates: 0, maxAreaRatio: 0, above2Percent: 0, above4Percent: 0, above6Percent: 0, rejectedBelow4Percent: 0, rejectedBelow8Percent: 0 },
       edge: { contours: 0, eligibleContours: 0, smallContoursAdmitted: 0, smallContourEvaluations: [], exactCandidates: 0, hullCandidates: 0, maxAreaRatio: 0, above2Percent: 0, above4Percent: 0, above6Percent: 0, rejectedBelow4Percent: 0, rejectedBelow8Percent: 0 },
+      edgeBridged: { contours: 0, eligibleContours: 0, smallContoursAdmitted: 0, smallContourEvaluations: [], exactCandidates: 0, hullCandidates: 0, maxAreaRatio: 0, above2Percent: 0, above4Percent: 0, above6Percent: 0, rejectedBelow4Percent: 0, rejectedBelow8Percent: 0, kernelSize: 0 },
       lines: { count: 0, candidate: false },
     },
     rejections: {}, candidates: [], selected: null,
@@ -331,9 +332,11 @@ export async function detectDocument(file: File, identity: DetectionDiagnosticCo
   let blurred: any = null
   let edges: any = null
   let edgeClosed: any = null
+  let edgeBridged: any = null
   let lightMask: any = null
   let lightClosed: any = null
   let kernel3: any = null
+  let bridgeKernel: any = null
 
   try {
     const cvWaitStarted = performance.now()
@@ -352,7 +355,7 @@ export async function detectDocument(file: File, identity: DetectionDiagnosticCo
     failureStage = 'opencv-source-creation'
     source = cv.matFromImageData(context.getImageData(0, 0, width, height))
     gray = new cv.Mat(); blurred = new cv.Mat(); edges = new cv.Mat(); edgeClosed = new cv.Mat()
-    lightMask = new cv.Mat(); lightClosed = new cv.Mat(); kernel3 = cv.Mat.ones(3, 3, cv.CV_8U)
+    edgeBridged = new cv.Mat(); lightMask = new cv.Mat(); lightClosed = new cv.Mat(); kernel3 = cv.Mat.ones(3, 3, cv.CV_8U)
     failureStage = 'candidate-generation'
     cv.cvtColor(source, gray, cv.COLOR_RGBA2GRAY)
     cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0)
@@ -361,6 +364,11 @@ export async function detectDocument(file: File, identity: DetectionDiagnosticCo
     const high = Math.max(low + 35, Math.min(190, median * 1.25))
     cv.Canny(blurred, edges, low, high)
     cv.morphologyEx(edges, edgeClosed, cv.MORPH_CLOSE, kernel3)
+    const rawBridgeSize = Math.max(7, Math.round(Math.min(width, height) * .009))
+    const bridgeSize = rawBridgeSize % 2 === 0 ? rawBridgeSize + 1 : rawBridgeSize
+    bridgeKernel = cv.Mat.ones(bridgeSize, bridgeSize, cv.CV_8U)
+    cv.morphologyEx(edges, edgeBridged, cv.MORPH_CLOSE, bridgeKernel)
+    diagnostics.stages.edgeBridged.kernelSize = bridgeSize
 
     const otsu = cv.threshold(blurred, lightMask, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
     cv.morphologyEx(lightMask, lightClosed, cv.MORPH_CLOSE, kernel3)
@@ -369,6 +377,7 @@ export async function detectDocument(file: File, identity: DetectionDiagnosticCo
     const candidates = [
       ...candidatesFromMask(cv, lightClosed, width, height, 'light-contour', diagnostics, diagnostics.stages.light),
       ...candidatesFromMask(cv, edgeClosed, width, height, 'edge-contour', diagnostics, diagnostics.stages.edge),
+      ...candidatesFromMask(cv, edgeBridged, width, height, 'edge-bridged-contour', diagnostics, diagnostics.stages.edgeBridged),
     ]
     const lineCandidate = candidateFromLines(cv, edgeClosed, width, height, diagnostics)
     if (lineCandidate) candidates.push(lineCandidate)
@@ -453,7 +462,7 @@ export async function detectDocument(file: File, identity: DetectionDiagnosticCo
     throw error
   } finally {
     image?.release()
-    source?.delete(); gray?.delete(); blurred?.delete(); edges?.delete(); edgeClosed?.delete(); lightMask?.delete(); lightClosed?.delete(); kernel3?.delete()
+    source?.delete(); gray?.delete(); blurred?.delete(); edges?.delete(); edgeClosed?.delete(); edgeBridged?.delete(); lightMask?.delete(); lightClosed?.delete(); kernel3?.delete(); bridgeKernel?.delete()
   }
 }
 
