@@ -81,6 +81,10 @@ try {
   assert.equal(typeof acceptedCandidate.contextMeasurements.outwardEdgeEvidence[0].pixelsEvaluated, 'number')
   assert.equal(typeof acceptedCandidate.contextMeasurements.outwardEdgeEvidence[0].samplesSatisfyingStrongEdgeCriterion, 'number')
   assert.equal(typeof acceptedCandidate.contextMeasurements.outwardEdgeEvidence[0].rawEvidenceRatio, 'number')
+  acceptedCandidate.contextMeasurements.outwardEdgeEvidence.forEach((evidence, index) => {
+    assert.ok(Math.hypot(evidence.searchRegion.end.x - evidence.searchRegion.start.x, evidence.searchRegion.end.y - evidence.searchRegion.start.y) > 1, `Accepted candidate edge ${index} has a zero-length diagnostic ray`)
+    assert.ok(evidence.samplesEvaluated > 0, `Accepted candidate edge ${index} evaluated no outward samples`)
+  })
   assert.equal(typeof acceptedCandidate.contextMeasurements.imageAreaOutsideCandidatePercent, 'number')
   assert.ok(Array.isArray(detectionPayload.pairwiseAcceptedCandidateComparisons))
 

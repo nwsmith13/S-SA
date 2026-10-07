@@ -15,6 +15,7 @@ try {
     const { commitPageProcessingResult } = await import('/src/document-processing/page-identity.ts')
     const { compareCandidateStructures } = await import('/src/document-processing/candidate-structure-diagnostics.ts')
     const { describeGeometry, describeGeometryTransition } = await import('/src/document-processing/geometry-diagnostics.ts')
+    const { constructOutwardEdgeRay } = await import('/src/document-processing/outward-edge-geometry.ts')
 
     const normal = assessCandidateQuality([
       { x: .275, y: .05 }, { x: .725, y: .05 }, { x: .725, y: .95 }, { x: .275, y: .95 },
@@ -93,6 +94,18 @@ try {
       { method: 'light-contour', score: .86, points: canonical }, 2,
       { method: 'edge-contour', score: .84, points: [{ x: .18, y: .14 }, { x: .76, y: .16 }, { x: .72, y: .70 }, { x: .097, y: .961 }] }, 5,
     )
+    const workingWidth = 1200; const workingHeight = 1600
+    const interiorRectangle = [
+      { x: .222 * workingWidth, y: .240 * workingHeight }, { x: .769 * workingWidth, y: .242 * workingHeight },
+      { x: .754 * workingWidth, y: .761 * workingHeight }, { x: .233 * workingWidth, y: .757 * workingHeight },
+    ]
+    const interiorRays = interiorRectangle.map((_point, index) => constructOutwardEdgeRay(interiorRectangle, index, workingWidth, workingHeight))
+    const perspectiveQuad = [
+      { x: 290, y: 230 }, { x: 1010, y: 390 }, { x: 890, y: 1330 }, { x: 170, y: 1160 },
+    ]
+    const perspectiveRays = perspectiveQuad.map((_point, index) => constructOutwardEdgeRay(perspectiveQuad, index, workingWidth, workingHeight))
+    const nearBoundary = [{ x: 200, y: .4 }, { x: 1000, y: .4 }, { x: 980, y: 1200 }, { x: 220, y: 1200 }]
+    const nearBoundaryTopRay = constructOutwardEdgeRay(nearBoundary, 0, workingWidth, workingHeight)
 
     let documents = [{ id: 'document-1', pages: [
       { id: 'page-a', processingToken: 'a-new', processedUrl: 'a-original' },
@@ -110,7 +123,7 @@ try {
     ] }]
     sharedTokenDocuments = commitPageProcessingResult(sharedTokenDocuments, 'page-m', 'shared-token', (page) => ({ ...page, processedUrl: 'm-result' }))
 
-    return { normal, angled, borderHugging, twoSideBoundary, ranked, clipped, clippedLoneAgreement, clippedCorroboratedAgreement, physicalCorroborated, physicalConflict, singleMethod, physicalDecisions, distantQuality, distantCorroborated, distantSingleMethod, distantDecisions, thinNoise, tinyNoise, rawGeometry, canonicalization, structuralComparison, pages: documents[0].pages, sharedTokenPages: sharedTokenDocuments[0].pages }
+    return { normal, angled, borderHugging, twoSideBoundary, ranked, clipped, clippedLoneAgreement, clippedCorroboratedAgreement, physicalCorroborated, physicalConflict, singleMethod, physicalDecisions, distantQuality, distantCorroborated, distantSingleMethod, distantDecisions, thinNoise, tinyNoise, rawGeometry, canonicalization, structuralComparison, interiorRays, perspectiveRays, nearBoundaryTopRay, pages: documents[0].pages, sharedTokenPages: sharedTokenDocuments[0].pages }
   })
 
   assert.equal(result.normal.accepted, true, '0.968 / 0.405 normal candidate was rejected')
@@ -160,6 +173,18 @@ try {
   assert.equal(result.structuralComparison.extensionRelationship.sameStructureLikely, true)
   assert.equal(result.structuralComparison.extensionRelationship.extendedCandidate, 'B')
   assert.ok(result.structuralComparison.extensionRelationship.extensionSides.includes('bottom'))
+  assert.deepEqual(result.interiorRays.map((ray) => ray.boundary), ['top', 'right', 'bottom', 'left'])
+  result.interiorRays.forEach((ray, index) => {
+    assert.equal(ray.available, true, `Interior rectangle edge ${index} has no outward ray`)
+    assert.ok(ray.lengthPixels > 1, `Interior rectangle edge ${index} ray is effectively zero-length`)
+    assert.ok(Math.hypot(ray.end.x - ray.start.x, ray.end.y - ray.start.y) > 1, `Interior rectangle edge ${index} start equals end`)
+  })
+  result.perspectiveRays.forEach((ray, index) => {
+    assert.equal(ray.available, true, `Perspective edge ${index} has no outward ray`)
+    assert.ok(ray.lengthPixels > 1, `Perspective edge ${index} ray is effectively zero-length`)
+  })
+  assert.equal(result.nearBoundaryTopRay.available, false)
+  assert.equal(result.nearBoundaryTopRay.unavailableReason, 'edge-too-close-to-image-boundary')
   assert.deepEqual(result.pages, [{ id: 'page-a', processingToken: 'a-new', processedUrl: 'a-result' }], 'Out-of-order processing crossed stable page identity')
   assert.deepEqual(result.sharedTokenPages, [
     { id: 'page-m', processingToken: 'shared-token', processedUrl: 'm-result' },
