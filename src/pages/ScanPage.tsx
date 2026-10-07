@@ -12,6 +12,9 @@ import { commitPageProcessingResult } from '../document-processing/page-identity
 import { detectDocument, processDocument, type DetectionDiagnosticContext } from '../document-processing/processor'
 import { describeGeometry, describeGeometryTransition } from '../document-processing/geometry-diagnostics'
 import { fullImageCorners, type Point, type ProcessedPage, type ProcessingMode, type ProcessingStatus } from '../document-processing/types'
+import { useAuth } from '../services/AuthContext'
+import { persistCompletedDocument } from '../services/cloudLibrary'
+import type { PersistenceDocument } from '../services/persistence-model.js'
 
 type ScanPage = {
   id: string
@@ -31,15 +34,21 @@ type ScanPage = {
 
 type ScanDocument = { id: string; name: string; fallbackName: string; pages: ScanPage[] }
 type ScanView = 'intake' | 'review' | 'summary'
-type PdfResult = { documentId: string; url: string; name: string; blob: Blob }
+type PdfResult = { documentId: string; url: string; name: string; blob: Blob; cloudState: 'saved' | 'local' | 'error'; cloudMessage?: string }
 
 const acceptedImages = 'image/jpeg,image/png,image/heic,image/heif,.jpg,.jpeg,.png,.heic,.heif'
 const modeLabels: Record<ProcessingMode, string> = { auto: 'Auto', color: 'Color', grayscale: 'Grayscale', 'black-white': 'Black & white' }
 const statusLabels: Record<ProcessingStatus, string> = { preparing: 'Preparing', finding: 'Finding paper', cleaning: 'Cleaning up', ready: 'Ready', attention: 'Check the edges' }
-const makeId = () => typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
+const makeId = () => {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  const bytes = crypto.getRandomValues(new Uint8Array(16)); bytes[6] = (bytes[6] & 0x0f) | 0x40; bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
 const createDocument = (number: number): ScanDocument => ({ id: makeId(), name: `Scan-${number}`, fallbackName: `Scan-${number}`, pages: [] })
 
 export function ScanPage() {
+  const { user } = useAuth()
   const cameraInput = useRef<HTMLInputElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const documentsRef = useRef<ScanDocument[]>([])
@@ -266,7 +275,14 @@ export function ScanPage() {
         const processedPages = doc.pages.flatMap((page) => page.processed ? [page.processed] : [])
         if (processedPages.length !== doc.pages.length) continue
         const blob = await createDocumentPdf(processedPages)
-        results.push({ documentId: doc.id, url: URL.createObjectURL(blob), name: pdfFilename(doc.name), blob })
+        const name = pdfFilename(doc.name)
+        let cloudState: PdfResult['cloudState'] = 'local'
+        let cloudMessage: string | undefined
+        if (user) {
+          try { await persistCompletedDocument(user.id, { ...doc, pages: doc.pages.map((page) => ({ ...page, processed: page.processed! })) } satisfies PersistenceDocument, name, blob); cloudState = 'saved' }
+          catch (error) { cloudState = 'error'; cloudMessage = error instanceof Error ? error.message : 'Cloud save failed.' }
+        }
+        results.push({ documentId: doc.id, url: URL.createObjectURL(blob), name, blob, cloudState, cloudMessage })
       }
       setPdfs(results)
     } finally { setCreatingPdfs(false) }
@@ -317,7 +333,7 @@ export function ScanPage() {
         </>
       )}
 
-      {view === 'summary' && <ScanSummary documents={filledDocuments} totalPages={totalPages} pdfs={pdfs} creatingPdfs={creatingPdfs} onRename={renameDocument} onCreatePdfs={createPdfs} onDownloadAll={downloadAll} onEdit={() => setView('review')} />}
+      {view === 'summary' && <ScanSummary documents={filledDocuments} totalPages={totalPages} pdfs={pdfs} creatingPdfs={creatingPdfs} signedIn={Boolean(user)} onRename={renameDocument} onCreatePdfs={createPdfs} onDownloadAll={downloadAll} onEdit={() => setView('review')} />}
 
       {editingPage && <CornerEditor imageUrl={editingPage.originalUrl} corners={editingPage.corners} detectedCorners={editingPage.detectedCorners} diagnosticIdentity={{ pageId: editingPage.id, documentId: editingDocument?.id, pageIndex: Math.max(0, editingPageIndex), pageNumber: Math.max(1, editingPageIndex + 1) }} uiHandoffCorners={editingPage.detectedCorners} onClose={() => setEditingPageId(null)} onApply={(corners) => applyManualEdges(editingPage, corners)} />}
       {reviewingPage && <PageComparison pageNumber={(currentDocument?.pages.findIndex((page) => page.id === reviewingPage.id) ?? 0) + 1} originalUrl={reviewingPage.originalUrl} processedUrl={reviewingPage.processedUrl} needsAttention={reviewingPage.status === 'attention'} onClose={() => setReviewingPageId(null)} onAdjust={() => { setReviewingPageId(null); setEditingPageId(reviewingPage.id) }} />}
@@ -353,8 +369,8 @@ function PageCard({ page, index, count, isDragging, onReview, onAdjust, onDragSt
   </article>
 }
 
-function ScanSummary({ documents, totalPages, pdfs, creatingPdfs, onRename, onCreatePdfs, onDownloadAll, onEdit }: { documents: ScanDocument[]; totalPages: number; pdfs: PdfResult[]; creatingPdfs: boolean; onRename: (id: string, value: string, finalize?: boolean) => void; onCreatePdfs: () => void; onDownloadAll: () => void; onEdit: () => void }) {
-  return <><header className="summary-header"><p className="kicker">Scan summary</p><h1>Your pages are ready.</h1><p>Each document will become its own PDF. Your original photos remain untouched.</p></header><section className="summary-totals"><div><strong>{documents.length}</strong><span>{documents.length === 1 ? 'document' : 'documents'}</span></div><div><strong>{totalPages}</strong><span>{totalPages === 1 ? 'page' : 'pages'} total</span></div></section><div className="summary-documents">{documents.map((doc, index) => { const pdf = pdfs.find((item) => item.documentId === doc.id); return <article className="summary-document" key={doc.id}><div className="summary-preview">{doc.pages.slice(0, 3).reverse().map((page, layer) => <img key={page.id} src={page.processedUrl ?? page.originalUrl} alt={layer === doc.pages.slice(0, 3).length - 1 ? `First page of document ${index + 1}` : ''} style={{ transform: `translate(${layer * 4}px, ${-layer * 3}px)` }} />)}</div><div className="summary-document-details"><label className="document-name-label" htmlFor={`document-name-${doc.id}`}>Document name</label><div className="document-name-row"><input id={`document-name-${doc.id}`} value={doc.name} maxLength={124} onChange={(event) => onRename(doc.id, event.target.value)} onBlur={(event) => onRename(doc.id, event.target.value, true)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} aria-describedby={`document-context-${doc.id}`} /><span>.pdf</span></div><p className="document-context" id={`document-context-${doc.id}`}>Document {index + 1} · {doc.pages.length} {doc.pages.length === 1 ? 'page' : 'pages'}</p>{pdf ? <a className="download-pdf" href={pdf.url} download={pdfFilename(doc.name)}><Download size={18} /> Download {pdfFilename(doc.name)}</a> : <p className="ready-label">Ready to create.</p>}</div></article> })}</div>{pdfs.length > 1 && <button className="download-all" type="button" onClick={onDownloadAll}><Download size={20} /> Download all PDFs</button>}<div className="summary-actions"><button className="secondary-button" type="button" onClick={onEdit}>Return and edit</button><button className="primary-button" type="button" onClick={onCreatePdfs} disabled={creatingPdfs}>{creatingPdfs ? 'Creating PDFs…' : pdfs.length ? 'Create PDFs again' : documents.length === 1 ? 'Create PDF' : 'Create PDFs'}</button></div></>
+function ScanSummary({ documents, totalPages, pdfs, creatingPdfs, signedIn, onRename, onCreatePdfs, onDownloadAll, onEdit }: { documents: ScanDocument[]; totalPages: number; pdfs: PdfResult[]; creatingPdfs: boolean; signedIn: boolean; onRename: (id: string, value: string, finalize?: boolean) => void; onCreatePdfs: () => void; onDownloadAll: () => void; onEdit: () => void }) {
+  return <><header className="summary-header"><p className="kicker">Scan summary</p><h1>Your pages are ready.</h1><p>Each document will become its own PDF. Your original photos remain untouched.</p></header><section className="summary-totals"><div><strong>{documents.length}</strong><span>{documents.length === 1 ? 'document' : 'documents'}</span></div><div><strong>{totalPages}</strong><span>{totalPages === 1 ? 'page' : 'pages'} total</span></div></section><div className="summary-documents">{documents.map((doc, index) => { const pdf = pdfs.find((item) => item.documentId === doc.id); return <article className="summary-document" key={doc.id}><div className="summary-preview">{doc.pages.slice(0, 3).reverse().map((page, layer) => <img key={page.id} src={page.processedUrl ?? page.originalUrl} alt={layer === doc.pages.slice(0, 3).length - 1 ? `First page of document ${index + 1}` : ''} style={{ transform: `translate(${layer * 4}px, ${-layer * 3}px)` }} />)}</div><div className="summary-document-details"><label className="document-name-label" htmlFor={`document-name-${doc.id}`}>Document name</label><div className="document-name-row"><input id={`document-name-${doc.id}`} value={doc.name} maxLength={124} onChange={(event) => onRename(doc.id, event.target.value)} onBlur={(event) => onRename(doc.id, event.target.value, true)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} aria-describedby={`document-context-${doc.id}`} /><span>.pdf</span></div><p className="document-context" id={`document-context-${doc.id}`}>Document {index + 1} · {doc.pages.length} {doc.pages.length === 1 ? 'page' : 'pages'}</p>{pdf ? <><a className="download-pdf" href={pdf.url} download={pdfFilename(doc.name)}><Download size={18} /> Download {pdfFilename(doc.name)}</a><p className={`cloud-status cloud-status--${pdf.cloudState}`}>{pdf.cloudState === 'saved' ? 'Saved to your Library.' : pdf.cloudState === 'error' ? `PDF created, but Library save failed: ${pdf.cloudMessage}` : 'PDF created on this device. Sign in to save it to your Library.'}</p></> : <p className="ready-label">Ready to create{signedIn ? ' and save to your Library' : ''}.</p>}</div></article> })}</div>{pdfs.length > 1 && <button className="download-all" type="button" onClick={onDownloadAll}><Download size={20} /> Download all PDFs</button>}<div className="summary-actions"><button className="secondary-button" type="button" onClick={onEdit}>Return and edit</button><button className="primary-button" type="button" onClick={onCreatePdfs} disabled={creatingPdfs}>{creatingPdfs ? 'Creating PDFs…' : pdfs.length ? 'Create PDFs again' : documents.length === 1 ? 'Create PDF' : 'Create PDFs'}</button></div></>
 }
 
 function ScanLineArt() { return <svg viewBox="0 0 180 220" fill="none" aria-hidden="true"><path d="M28 1H6a5 5 0 0 0-5 5v22M152 1h22a5 5 0 0 1 5 5v22M28 219H6a5 5 0 0 1-5-5v-22M152 219h22a5 5 0 0 0 5-5v-22" stroke="currentColor" strokeWidth="2" /><path d="M40 46h100M40 67h77M40 108h100M40 129h89M40 150h100" stroke="currentColor" strokeWidth="3" strokeLinecap="round" opacity=".28" /><rect x="40" y="84" width="45" height="7" rx="3.5" fill="currentColor" opacity=".55" /></svg> }

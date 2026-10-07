@@ -1,15 +1,19 @@
-import { BookOpen, Files, House, ScanLine } from 'lucide-react'
+import { BookOpen, Files, House, ScanLine, UserCircle } from 'lucide-react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { Brand } from './Brand'
+import { useAuth } from '../services/AuthContext'
+import { supabase } from '../services/supabase'
 
 const navigation = [
   { to: '/', label: 'Home', icon: House, end: true },
   { to: '/scan', label: 'Scan', icon: ScanLine },
   { to: '/cleanup', label: 'Clean up', icon: Files },
   { to: '/library', label: 'Library', icon: BookOpen },
+  { to: '/account', label: 'Account', icon: UserCircle },
 ]
 
 export function AppShell() {
+  const { user } = useAuth()
   return (
     <div className="app-shell">
       <header className="site-header">
@@ -19,7 +23,7 @@ export function AppShell() {
             <NavLink key={to} to={to} end={end}>{label}</NavLink>
           ))}
         </nav>
-        <div className="safety-note"><span aria-hidden="true">●</span> Originals stay untouched</div>
+        <div className="header-account">{user ? <button type="button" onClick={() => void supabase?.auth.signOut()}>Sign out</button> : <NavLink to="/account">Sign in</NavLink>}<small><span aria-hidden="true">●</span> Originals stay untouched</small></div>
       </header>
 
       <main>

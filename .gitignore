@@ -1,0 +1,29 @@
+# Dependencies and production output
+node_modules/
+dist/
+
+# Local environment configuration
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs and local tooling state
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tsbuildinfo
+
+# Editor artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Operating-system artifacts
+.DS_Store
+Thumbs.db
+Desktop.ini

@@ -11,9 +11,11 @@
     "test:opencv-loader": "node tests/opencv-loader.regression.mjs",
     "test:scanner-reliability": "node tests/scanner-reliability.regression.mjs",
     "test:scan-summary": "node tests/scan-summary.regression.mjs",
-    "test:routing": "node tests/spa-routing.regression.mjs"
+    "test:routing": "node tests/spa-routing.regression.mjs",
+    "test:cloud-library": "node tests/cloud-library.regression.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.3",
     "@tailwindcss/vite": "latest",
     "@techstark/opencv-js": "^5.0.0-release.1",
     "@types/react": "latest",
