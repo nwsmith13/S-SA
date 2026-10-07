@@ -7,7 +7,7 @@ import { PageIntro } from '../components/PageIntro'
 import { createDocumentPdf } from '../document-processing/pdf'
 import { emitDiagnostic, serializeDiagnosticError } from '../document-processing/diagnostics'
 import { commitPageProcessingResult } from '../document-processing/page-identity'
-import { detectDocument, processDocument } from '../document-processing/processor'
+import { detectDocument, processDocument, type DetectionDiagnosticContext } from '../document-processing/processor'
 import { fullImageCorners, type Point, type ProcessedPage, type ProcessingMode, type ProcessingStatus } from '../document-processing/types'
 
 type ScanPage = {
@@ -114,19 +114,27 @@ export function ScanPage() {
     }
   }
 
-  const preparePage = async (page: ScanPage) => {
+  const preparePage = async (page: ScanPage, initialIdentity: DetectionDiagnosticContext) => {
+    const liveDocument = documentsRef.current.find((document) => document.pages.some((item) => item.id === page.id))
+    const livePageIndex = liveDocument?.pages.findIndex((item) => item.id === page.id) ?? -1
+    const identity = liveDocument && livePageIndex >= 0
+      ? { pageId: page.id, documentId: liveDocument.id, pageIndex: livePageIndex, pageNumber: livePageIndex + 1 }
+      : initialIdentity
     updatePage(page.id, (current) => ({ ...current, status: 'finding' }))
     try {
-      const detection = await detectDocument(page.file)
+      const detection = await detectDocument(page.file, identity)
       if (detection.confidence < .5) {
+        emitDiagnostic('[S&SA detection UI result]', { ...identity, resultState: 'manual-adjust-edges', editorCorners: detection.corners, cornerSource: 'candidate', selectedCandidateMethod: detection.method, candidateConfidence: detection.confidence })
         updatePage(page.id, (current) => ({ ...current, corners: detection.corners, detectedCorners: detection.corners, confidence: detection.confidence, status: 'attention', message: 'Check the edges before cleaning up this page.' }))
         setEditingPageId((current) => current ?? page.id)
         return
       }
+      emitDiagnostic('[S&SA detection UI result]', { ...identity, resultState: 'auto-apply', editorCorners: null, cornerSource: 'not-required', selectedCandidateMethod: detection.method, candidateConfidence: detection.confidence })
       await renderPage(page.id, page.file, detection.corners, page.mode, page.rotation, detection.corners, detection.confidence)
     } catch (error) {
       emitDiagnostic('[S&SA detection fallback]', { stage: 'prepare-page', error: serializeDiagnosticError(error) }, 'warn')
       const corners = fullImageCorners()
+      emitDiagnostic('[S&SA detection UI result]', { ...identity, resultState: 'full-image-fallback', editorCorners: corners, cornerSource: 'full-image', selectedCandidateMethod: null, candidateConfidence: 0 })
       updatePage(page.id, (current) => ({ ...current, corners, detectedCorners: corners, confidence: 0, status: 'attention', message: "S&SA couldn't find the paper automatically." }))
       setEditingPageId((current) => current ?? page.id)
     }
@@ -139,14 +147,26 @@ export function ScanPage() {
       corners: fullImageCorners(), detectedCorners: fullImageCorners(), confidence: 0,
     }))
     pages.forEach((page) => livePageIds.current.add(page.id))
-    if (currentId) setDocuments((existing) => existing.map((doc) => doc.id === currentId ? { ...doc, pages: [...doc.pages, ...pages] } : doc))
-    else {
+    let targetDocumentId: string
+    let startingPageIndex: number
+    if (currentId) {
+      targetDocumentId = currentId
+      startingPageIndex = currentDocument?.pages.length ?? 0
+      setDocuments((existing) => existing.map((doc) => doc.id === currentId ? { ...doc, pages: [...doc.pages, ...pages] } : doc))
+    } else {
       const doc = { ...createDocument(), pages }
+      targetDocumentId = doc.id
+      startingPageIndex = 0
       setCurrentId(doc.id)
       setDocuments((existing) => [...existing, doc])
     }
     setView('review')
-    void (async () => { for (const page of pages) await preparePage(page) })()
+    void (async () => {
+      for (const [index, page] of pages.entries()) {
+        const pageIndex = startingPageIndex + index
+        await preparePage(page, { pageId: page.id, documentId: targetDocumentId, pageIndex, pageNumber: pageIndex + 1 })
+      }
+    })()
   }
 
   const handleInput = (event: React.ChangeEvent<HTMLInputElement>) => { addFiles(event.target.files); event.target.value = '' }

@@ -4,12 +4,14 @@ import { getOpenCv, getOpenCvInitializationMs, type CvRuntime } from './opencv-l
 import { classifyContourArea, findIndependentAgreement, selectCandidateByQuality, shouldAutoApplyCandidate, type CandidateAgreement, type CandidateQualityAssessment } from './candidate-quality'
 
 type Cv = CvRuntime
+export type DetectionDiagnosticContext = { pageId: string; documentId?: string; pageIndex: number; pageNumber: number }
 type LoadedImage = { source: CanvasImageSource; width: number; height: number; decodeMethod: 'image-bitmap' | 'html-image'; release: () => void }
 type Candidate = { points: Point[]; confidence: number; method: DetectionResult['method'] }
 type SmallContourEvaluation = { contourIndex: number; areaRatio: number; exactCandidate: boolean; hullCandidate: boolean }
 type StageStats = { contours: number; eligibleContours: number; smallContoursAdmitted: number; smallContourEvaluations: SmallContourEvaluation[]; exactCandidates: number; hullCandidates: number; maxAreaRatio: number; above2Percent: number; above4Percent: number; above6Percent: number; rejectedBelow4Percent: number; rejectedBelow8Percent: number }
 type DetectionDiagnostics = {
-  file: { name: string; type: string; bytes: number }
+  identity: DetectionDiagnosticContext
+  file: { name: string; type: string; bytes: number; lastModified: number }
   decode?: { method: LoadedImage['decodeMethod']; width: number; height: number }
   workingDimensions?: string
   canny?: { median: number; low: number; high: number; otsu: number }
@@ -22,6 +24,7 @@ type DetectionDiagnostics = {
   selectionDecision?: { highestScoreIndex: number | null; selectedIndex: number | null; rejectedHigherCandidates: number; behavior: 'auto-apply' | 'manual-adjust-edges' }
   methodAgreement?: CandidateAgreement
   confidenceDecision?: { originalScore: number; returnedConfidence: number; requiresIndependentAgreement: boolean; independentCandidateFound: boolean; corroborated: boolean; materialConflict: boolean; reason: 'geometry-and-confidence' | 'independent-method-agreement' | 'independent-method-conflict' | 'required-agreement-missing' | 'candidate-quality-rejected'; behavior: 'auto-apply' | 'manual-adjust-edges' }
+  result?: { state: 'auto-apply' | 'manual-adjust-edges' | 'full-image-fallback'; editorCorners: Point[] | null; cornerSource: 'candidate' | 'full-image' | 'not-required'; selectedCandidateMethod: Candidate['method'] | null; selectedCandidateIndex: number | null; candidateConfidence: number; agreement: CandidateAgreement | null }
 }
 
 class ProcessingPipelineError extends Error {
@@ -241,10 +244,11 @@ function grayMedian(gray: any) {
   return samples[Math.floor(samples.length / 2)] ?? 100
 }
 
-export async function detectDocument(file: File): Promise<DetectionResult> {
+export async function detectDocument(file: File, identity: DetectionDiagnosticContext): Promise<DetectionResult> {
   const totalStarted = performance.now()
   const diagnostics: DetectionDiagnostics = {
-    file: { name: file.name, type: file.type, bytes: file.size },
+    identity,
+    file: { name: file.name, type: file.type, bytes: file.size, lastModified: file.lastModified },
     stages: {
       light: { contours: 0, eligibleContours: 0, smallContoursAdmitted: 0, smallContourEvaluations: [], exactCandidates: 0, hullCandidates: 0, maxAreaRatio: 0, above2Percent: 0, above4Percent: 0, above6Percent: 0, rejectedBelow4Percent: 0, rejectedBelow8Percent: 0 },
       edge: { contours: 0, eligibleContours: 0, smallContoursAdmitted: 0, smallContourEvaluations: [], exactCandidates: 0, hullCandidates: 0, maxAreaRatio: 0, above2Percent: 0, above4Percent: 0, above6Percent: 0, rejectedBelow4Percent: 0, rejectedBelow8Percent: 0 },
@@ -337,6 +341,19 @@ export async function detectDocument(file: File): Promise<DetectionResult> {
       diagnostics.confidenceDecision = { originalScore: best.confidence, returnedConfidence, requiresIndependentAgreement: candidateQuality.requiresIndependentAgreement, independentCandidateFound: methodAgreement.independentCandidateFound, corroborated: methodAgreement.corroborated, materialConflict: methodAgreement.materialConflict, reason, behavior: autoApply ? 'auto-apply' : 'manual-adjust-edges' }
     }
     if (best && !autoApply) diagnostics.fallback = 'manual-adjust-edges'
+    const fullImage = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]
+    diagnostics.result = best ? {
+      state: autoApply ? 'auto-apply' : 'manual-adjust-edges',
+      editorCorners: autoApply ? null : normalizedBest!,
+      cornerSource: autoApply ? 'not-required' : 'candidate',
+      selectedCandidateMethod: best.method,
+      selectedCandidateIndex: bestIndex,
+      candidateConfidence: best.confidence,
+      agreement: methodAgreement,
+    } : {
+      state: 'full-image-fallback', editorCorners: fullImage, cornerSource: 'full-image', selectedCandidateMethod: null,
+      selectedCandidateIndex: null, candidateConfidence: 0, agreement: null,
+    }
     const detectionMs = performance.now() - detectionStarted
     const timing = { opencvInitMs, imageDecodeMs, detectionMs, totalMs: performance.now() - totalStarted }
     emitDiagnostic('[S&SA detection diagnostics]', diagnostics)
@@ -344,6 +361,10 @@ export async function detectDocument(file: File): Promise<DetectionResult> {
     if (!best) throw new Error('No reasonable paper candidate found')
     return { corners: normalizedBest!, confidence: returnedConfidence, sourceWidth: width, sourceHeight: height, method: best.method, timing }
   } catch (error) {
+    diagnostics.result ??= {
+      state: 'full-image-fallback', editorCorners: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }], cornerSource: 'full-image',
+      selectedCandidateMethod: null, selectedCandidateIndex: null, candidateConfidence: 0, agreement: null,
+    }
     emitDiagnostic('[S&SA detection failure]', { stage: failureStage, error: serializeDiagnosticError(error), diagnostics }, 'error')
     throw error
   } finally {
