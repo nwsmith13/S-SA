@@ -1,6 +1,7 @@
 import type { Point } from './types'
 
-const labels = ['TL', 'TR', 'BR', 'BL'] as const
+const canonicalLabels = ['TL', 'TR', 'BR', 'BL'] as const
+const rawLabels = ['P0', 'P1', 'P2', 'P3'] as const
 
 function cross(a: Point, b: Point, c: Point) {
   return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
@@ -12,7 +13,8 @@ function intersects(a: Point, b: Point, c: Point, d: Point) {
   return abC * abD < 0 && cdA * cdB < 0
 }
 
-export function describeGeometry(points: Point[]) {
+export function describeGeometry(points: Point[], labelMode: 'canonical' | 'raw' = 'canonical') {
+  const labels = labelMode === 'raw' ? rawLabels : canonicalLabels
   const signs = points.length === 4 ? points.map((point, index) => Math.sign(cross(point, points[(index + 1) % 4], points[(index + 2) % 4]))).filter(Boolean) : []
   const edgeIntersections = points.length === 4 ? [
     { edges: ['TL-TR', 'BR-BL'], intersects: intersects(points[0], points[1], points[2], points[3]) },
@@ -26,20 +28,22 @@ export function describeGeometry(points: Point[]) {
   }
 }
 
-export function describeGeometryTransition(from: Point[], to: Point[]) {
+export function describeGeometryTransition(from: Point[], to: Point[], fromLabelMode: 'canonical' | 'raw' = 'canonical', toLabelMode: 'canonical' | 'raw' = 'canonical') {
+  const fromLabels = fromLabelMode === 'raw' ? rawLabels : canonicalLabels
+  const toLabels = toLabelMode === 'raw' ? rawLabels : canonicalLabels
   const mapping = from.map((point, fromIndex) => {
     let best = -1; let bestDistance = Number.POSITIVE_INFINITY
     to.forEach((candidate, index) => {
       const distance = Math.hypot(point.x - candidate.x, point.y - candidate.y)
       if (distance < bestDistance) { best = index; bestDistance = distance }
     })
-    return { from: labels[fromIndex] ?? `corner-${fromIndex + 1}`, to: labels[best] ?? `corner-${best + 1}`, distance: bestDistance }
+    return { from: fromLabels[fromIndex] ?? `corner-${fromIndex + 1}`, to: toLabels[best] ?? `corner-${best + 1}`, distance: bestDistance }
   })
-  const fromGeometry = describeGeometry(from)
-  const toGeometry = describeGeometry(to)
+  const fromGeometry = describeGeometry(from, fromLabelMode)
+  const toGeometry = describeGeometry(to, toLabelMode)
   return {
     mapping,
-    cornerOrderChanged: mapping.some((entry, index) => entry.distance <= 1e-6 && entry.to !== labels[index]),
+    cornerOrderChanged: mapping.some((entry, index) => entry.distance <= 1e-6 && entry.to !== toLabels[index]),
     coordinatesChanged: mapping.some((entry) => entry.distance > 1e-6),
     becameNonConvex: fromGeometry.convex && !toGeometry.convex,
     becameSelfIntersecting: !fromGeometry.selfIntersecting && toGeometry.selfIntersecting,

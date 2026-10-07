@@ -68,7 +68,7 @@ try {
   assert.equal(typeof detectionPayload.result.candidateConfidence, 'number')
   assert.equal(typeof detectionPayload.result.agreement.corroborated, 'boolean')
   assert.equal(typeof detectionPayload.file.lastModified, 'number')
-  assert.equal(detectionPayload.result.geometryTrace.detectorCandidate.corners.length, 4)
+  assert.deepEqual(detectionPayload.result.geometryTrace.detectorCandidate.corners.map((corner) => corner.label), ['P0', 'P1', 'P2', 'P3'])
   assert.equal(detectionPayload.result.geometryTrace.orderedCandidate.corners[0].label, 'TL')
   assert.equal(typeof detectionPayload.result.geometryTrace.transition.cornerOrderChanged, 'boolean')
   const acceptedCandidate = detectionPayload.candidates.find((candidate) => candidate.accepted)
@@ -76,7 +76,13 @@ try {
   assert.equal(typeof acceptedCandidate.contextMeasurements.boundingBox.heightRatio, 'number')
   assert.equal(typeof acceptedCandidate.contextMeasurements.centroid.x, 'number')
   assert.equal(acceptedCandidate.contextMeasurements.outwardEdgeEvidence.length, 4)
+  assert.equal(typeof acceptedCandidate.contextMeasurements.outwardEdgeEvidence[0].searchRegion.type, 'string')
+  assert.equal(typeof acceptedCandidate.contextMeasurements.outwardEdgeEvidence[0].samplesEvaluated, 'number')
+  assert.equal(typeof acceptedCandidate.contextMeasurements.outwardEdgeEvidence[0].pixelsEvaluated, 'number')
+  assert.equal(typeof acceptedCandidate.contextMeasurements.outwardEdgeEvidence[0].samplesSatisfyingStrongEdgeCriterion, 'number')
+  assert.equal(typeof acceptedCandidate.contextMeasurements.outwardEdgeEvidence[0].rawEvidenceRatio, 'number')
   assert.equal(typeof acceptedCandidate.contextMeasurements.imageAreaOutsideCandidatePercent, 'number')
+  assert.ok(Array.isArray(detectionPayload.pairwiseAcceptedCandidateComparisons))
 
   const expectedForeground = [{ x: .10, y: .18 }, { x: .80, y: .18 }, { x: .83, y: .84 }, { x: .09, y: .84 }]
   const distances = corners.map((point, index) => Math.hypot(point.x - expectedForeground[index].x, point.y - expectedForeground[index].y))

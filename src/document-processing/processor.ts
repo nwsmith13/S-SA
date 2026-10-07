@@ -3,6 +3,7 @@ import { emitDiagnostic, serializeDiagnosticError } from './diagnostics'
 import { getOpenCv, getOpenCvInitializationMs, type CvRuntime } from './opencv-loader'
 import { classifyContourArea, findIndependentAgreement, selectCandidateByQuality, shouldAutoApplyCandidate, type CandidateAgreement, type CandidateQualityAssessment } from './candidate-quality'
 import { describeGeometry, describeGeometryTransition } from './geometry-diagnostics'
+import { compareCandidateStructures } from './candidate-structure-diagnostics'
 
 type Cv = CvRuntime
 export type DetectionDiagnosticContext = { pageId: string; documentId?: string; pageIndex: number; pageNumber: number }
@@ -19,6 +20,7 @@ type DetectionDiagnostics = {
   stages: { light: StageStats; edge: StageStats; lines: { count: number; candidate: boolean } }
   rejections: Record<string, number>
   candidates: Array<{ method: Candidate['method']; score: number; areaRatio: number; corners: number[][]; accepted: boolean; rejectionReasons: string[]; boundaryFollowingEdges: CandidateQualityAssessment['boundaryFollowingEdges']; requiresIndependentAgreement: boolean; agreement: CandidateAgreement; contextMeasurements?: ReturnType<typeof measureCandidateContext> }>
+  pairwiseAcceptedCandidateComparisons?: ReturnType<typeof compareCandidateStructures>[]
   selected: number | null
   candidateQuality?: CandidateQualityAssessment
   fallback?: 'manual-adjust-edges'
@@ -133,21 +135,32 @@ function outwardEdgeEvidence(edgeMask: any, points: Point[]) {
       vector.y > 0 ? (edgeMask.rows - 1 - midpoint.y) / vector.y : vector.y < 0 ? -midpoint.y / vector.y : Number.POSITIVE_INFINITY,
     ].filter((value) => value > 0 && Number.isFinite(value))
     const limit = Math.min(...limits)
-    if (!Number.isFinite(limit) || limit <= 1) return { edge: edgeLabels[index], strongEvidenceContinuesOutward: false, evidenceRatio: 0 }
-    let hits = 0; const samples = 32
+    if (!Number.isFinite(limit) || limit <= 1) return {
+      edge: edgeLabels[index], searchRegion: { type: 'outward-midpoint-ray', start: midpoint, end: midpoint, neighborhoodRadiusPixels: 1, unavailableReason: 'no-outward-ray-to-image-boundary' },
+      samplesEvaluated: 0, pixelsEvaluated: 0, samplesSatisfyingStrongEdgeCriterion: 0, pixelsSatisfyingStrongEdgeCriterion: 0,
+      pixelValueThreshold: 0, classificationRatioThreshold: .08, rawEvidenceRatio: 0, strongEvidenceContinuesOutward: false, evidenceRatio: 0,
+    }
+    let hits = 0; let strongEdgePixelCount = 0; let pixelsEvaluated = 0; const samples = 32; const neighborhoodRadiusPixels = 1; const pixelValueThreshold = 0
+    const rayEnd = { x: centroid.x + vector.x * limit, y: centroid.y + vector.y * limit }
     for (let sample = 1; sample <= samples; sample += 1) {
       const scale = 1 + (limit - 1) * sample / samples
       const x = Math.max(0, Math.min(edgeMask.cols - 1, Math.round(centroid.x + vector.x * scale)))
       const y = Math.max(0, Math.min(edgeMask.rows - 1, Math.round(centroid.y + vector.y * scale)))
       let hit = false
-      for (let offsetY = -1; offsetY <= 1 && !hit; offsetY += 1) for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
         const px = Math.max(0, Math.min(edgeMask.cols - 1, x + offsetX)); const py = Math.max(0, Math.min(edgeMask.rows - 1, y + offsetY))
-        if (edgeMask.ucharPtr(py, px)[0] > 0) { hit = true; break }
+        pixelsEvaluated += 1
+        if (edgeMask.ucharPtr(py, px)[0] > pixelValueThreshold) { hit = true; strongEdgePixelCount += 1 }
       }
       if (hit) hits += 1
     }
     const evidenceRatio = hits / samples
-    return { edge: edgeLabels[index], strongEvidenceContinuesOutward: evidenceRatio >= .08, evidenceRatio }
+    return {
+      edge: edgeLabels[index], searchRegion: { type: 'outward-midpoint-ray', start: midpoint, end: rayEnd, neighborhoodRadiusPixels },
+      samplesEvaluated: samples, pixelsEvaluated, samplesSatisfyingStrongEdgeCriterion: hits, pixelsSatisfyingStrongEdgeCriterion: strongEdgePixelCount,
+      pixelValueThreshold, classificationRatioThreshold: .08, rawEvidenceRatio: evidenceRatio,
+      strongEvidenceContinuesOutward: evidenceRatio >= .08, evidenceRatio,
+    }
   })
 }
 
@@ -394,6 +407,11 @@ export async function detectDocument(file: File, identity: DetectionDiagnosticCo
         ? measureCandidateContext(index, candidates, normalizedCandidates, qualitySelection.assessments, edgeClosed, width, height)
         : undefined,
     }))
+    const acceptedCandidateIndexes = qualitySelection.assessments.map((assessment, index) => assessment.accepted ? index : -1).filter((index) => index >= 0)
+    diagnostics.pairwiseAcceptedCandidateComparisons = acceptedCandidateIndexes.flatMap((firstIndex, position) => acceptedCandidateIndexes.slice(position + 1).map((secondIndex) => compareCandidateStructures(
+      { method: candidates[firstIndex].method, score: candidates[firstIndex].confidence, points: normalizedCandidates[firstIndex] }, firstIndex,
+      { method: candidates[secondIndex].method, score: candidates[secondIndex].confidence, points: normalizedCandidates[secondIndex] }, secondIndex,
+    )))
     diagnostics.candidateQuality = candidateQuality
     diagnostics.methodAgreement = methodAgreement
     diagnostics.selected = autoApply ? bestIndex : null
@@ -409,9 +427,9 @@ export async function detectDocument(file: File, identity: DetectionDiagnosticCo
     if (best && !autoApply) diagnostics.fallback = 'manual-adjust-edges'
     const fullImage = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]
     const detectorBest = bestIndex >= 0 ? best!.detectorPoints.map((point) => ({ x: point.x / width, y: point.y / height })) : undefined
-    const geometryTransition = detectorBest && normalizedBest ? describeGeometryTransition(detectorBest, normalizedBest) : undefined
-    if (!autoApply && geometryTransition && (geometryTransition.cornerOrderChanged || geometryTransition.becameNonConvex || geometryTransition.becameSelfIntersecting)) {
-      emitDiagnostic('[S&SA GEOMETRY WARNING]', { ...identity, transition: 'detector-candidate-to-ordered-candidate', analysis: geometryTransition, from: describeGeometry(detectorBest!), to: describeGeometry(normalizedBest!) }, 'error')
+    const geometryTransition = detectorBest && normalizedBest ? describeGeometryTransition(detectorBest, normalizedBest, 'raw', 'canonical') : undefined
+    if (!autoApply && geometryTransition && (geometryTransition.coordinatesChanged || geometryTransition.becameNonConvex || geometryTransition.becameSelfIntersecting)) {
+      emitDiagnostic('[S&SA GEOMETRY WARNING]', { ...identity, transition: 'detector-candidate-to-ordered-candidate', analysis: geometryTransition, from: describeGeometry(detectorBest!, 'raw'), to: describeGeometry(normalizedBest!) }, 'error')
     }
     diagnostics.result = best ? {
       state: autoApply ? 'auto-apply' : 'manual-adjust-edges',
@@ -422,7 +440,7 @@ export async function detectDocument(file: File, identity: DetectionDiagnosticCo
       candidateConfidence: best.confidence,
       agreement: methodAgreement,
       geometryTrace: detectorBest && normalizedBest && geometryTransition ? {
-        detectorCandidate: describeGeometry(detectorBest), orderedCandidate: describeGeometry(normalizedBest), transition: geometryTransition,
+        detectorCandidate: describeGeometry(detectorBest, 'raw'), orderedCandidate: describeGeometry(normalizedBest), transition: geometryTransition,
       } : undefined,
     } : {
       state: 'full-image-fallback', editorCorners: fullImage, cornerSource: 'full-image', selectedCandidateMethod: null,

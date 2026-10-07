@@ -13,6 +13,8 @@ try {
   const result = await page.evaluate(async () => {
     const { assessCandidateQuality, classifyContourArea, findIndependentAgreement, selectCandidateByQuality, shouldAutoApplyCandidate } = await import('/src/document-processing/candidate-quality.ts')
     const { commitPageProcessingResult } = await import('/src/document-processing/page-identity.ts')
+    const { compareCandidateStructures } = await import('/src/document-processing/candidate-structure-diagnostics.ts')
+    const { describeGeometry, describeGeometryTransition } = await import('/src/document-processing/geometry-diagnostics.ts')
 
     const normal = assessCandidateQuality([
       { x: .275, y: .05 }, { x: .725, y: .05 }, { x: .725, y: .95 }, { x: .275, y: .95 },
@@ -83,6 +85,14 @@ try {
       corroborated: shouldAutoApplyCandidate(distantQuality, distantCorroborated),
       singleMethod: shouldAutoApplyCandidate(distantQuality, distantSingleMethod),
     }
+    const canonical = [{ x: .18, y: .14 }, { x: .76, y: .16 }, { x: .72, y: .70 }, { x: .178, y: .703 }]
+    const raw = [canonical[2], canonical[3], canonical[0], canonical[1]]
+    const rawGeometry = describeGeometry(raw, 'raw')
+    const canonicalization = describeGeometryTransition(raw, canonical, 'raw', 'canonical')
+    const structuralComparison = compareCandidateStructures(
+      { method: 'light-contour', score: .86, points: canonical }, 2,
+      { method: 'edge-contour', score: .84, points: [{ x: .18, y: .14 }, { x: .76, y: .16 }, { x: .72, y: .70 }, { x: .097, y: .961 }] }, 5,
+    )
 
     let documents = [{ id: 'document-1', pages: [
       { id: 'page-a', processingToken: 'a-new', processedUrl: 'a-original' },
@@ -100,7 +110,7 @@ try {
     ] }]
     sharedTokenDocuments = commitPageProcessingResult(sharedTokenDocuments, 'page-m', 'shared-token', (page) => ({ ...page, processedUrl: 'm-result' }))
 
-    return { normal, angled, borderHugging, twoSideBoundary, ranked, clipped, clippedLoneAgreement, clippedCorroboratedAgreement, physicalCorroborated, physicalConflict, singleMethod, physicalDecisions, distantQuality, distantCorroborated, distantSingleMethod, distantDecisions, thinNoise, tinyNoise, pages: documents[0].pages, sharedTokenPages: sharedTokenDocuments[0].pages }
+    return { normal, angled, borderHugging, twoSideBoundary, ranked, clipped, clippedLoneAgreement, clippedCorroboratedAgreement, physicalCorroborated, physicalConflict, singleMethod, physicalDecisions, distantQuality, distantCorroborated, distantSingleMethod, distantDecisions, thinNoise, tinyNoise, rawGeometry, canonicalization, structuralComparison, pages: documents[0].pages, sharedTokenPages: sharedTokenDocuments[0].pages }
   })
 
   assert.equal(result.normal.accepted, true, '0.968 / 0.405 normal candidate was rejected')
@@ -139,6 +149,17 @@ try {
   assert.ok(result.thinNoise.reasons.includes('small-region-with-implausible-edge-balance'))
   assert.equal(result.tinyNoise.accepted, false, 'Sub-4% noise passed candidate quality')
   assert.ok(result.tinyNoise.reasons.includes('candidate-too-small'))
+  assert.deepEqual(result.rawGeometry.corners.map((corner) => corner.label), ['P0', 'P1', 'P2', 'P3'])
+  assert.equal(result.canonicalization.cornerOrderChanged, true, 'Raw detector permutation was not exposed')
+  assert.equal(result.canonicalization.coordinatesChanged, false, 'Pure canonicalization was incorrectly reported as a coordinate change')
+  assert.deepEqual(result.structuralComparison.candidateA, { index: 2, method: 'light-contour', score: .86 })
+  assert.deepEqual(result.structuralComparison.candidateB, { index: 5, method: 'edge-contour', score: .84 })
+  assert.equal(result.structuralComparison.bestCornerCorrespondence.length, 4)
+  assert.ok(result.structuralComparison.sharedCornerCount >= 3)
+  assert.ok(result.structuralComparison.sharedEdgeCount >= 2)
+  assert.equal(result.structuralComparison.extensionRelationship.sameStructureLikely, true)
+  assert.equal(result.structuralComparison.extensionRelationship.extendedCandidate, 'B')
+  assert.ok(result.structuralComparison.extensionRelationship.extensionSides.includes('bottom'))
   assert.deepEqual(result.pages, [{ id: 'page-a', processingToken: 'a-new', processedUrl: 'a-result' }], 'Out-of-order processing crossed stable page identity')
   assert.deepEqual(result.sharedTokenPages, [
     { id: 'page-m', processingToken: 'shared-token', processedUrl: 'm-result' },
