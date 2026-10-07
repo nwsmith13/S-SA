@@ -28,6 +28,65 @@ try {
   await page.locator('.page-status').waitFor({ state: 'visible', timeout: 30_000 })
   await page.waitForFunction(() => ['Ready', 'Check the edges'].includes(document.querySelector('.page-status')?.textContent?.trim() ?? ''), undefined, { timeout: 30_000 })
 
+  const mobileReviewLayout = await page.evaluate(() => {
+    const card = document.querySelector('.page-card').getBoundingClientRect()
+    const preview = document.querySelector('.page-image-wrap').getBoundingClientRect()
+    const grid = document.querySelector('.page-grid').getBoundingClientRect()
+    const review = document.querySelector('.page-review').getBoundingClientRect()
+    const cardStyle = getComputedStyle(document.querySelector('.page-card'))
+    const adjust = document.querySelector('.adjust-edges').getBoundingClientRect()
+    const controls = [...document.querySelectorAll('.page-card-actions button')].map((button) => button.getBoundingClientRect())
+    return { viewportWidth: innerWidth, documentWidth: document.documentElement.scrollWidth, reviewWidth: review.width, gridWidth: grid.width, cardWidth: card.width, cardLeft: card.left, cardRight: card.right, gridLeft: grid.left, gridRight: grid.right, cardCssWidth: cardStyle.width, cardMaxWidth: cardStyle.maxWidth, previewWidth: preview.width, previewHeight: preview.height, adjustHeight: adjust.height, controlSizes: controls.map((rect) => ({ width: rect.width, height: rect.height })) }
+  })
+  assert.ok(mobileReviewLayout.documentWidth <= mobileReviewLayout.viewportWidth, `Mobile review has horizontal overflow: ${JSON.stringify(mobileReviewLayout)}`)
+  assert.ok(mobileReviewLayout.cardWidth / mobileReviewLayout.gridWidth >= .995, `Phone card does not fill its review grid: ${JSON.stringify(mobileReviewLayout)}`)
+  assert.ok(Math.abs(mobileReviewLayout.cardLeft - mobileReviewLayout.gridLeft) <= 1 && Math.abs(mobileReviewLayout.cardRight - mobileReviewLayout.gridRight) <= 1, `Phone card is not aligned to both review-grid edges: ${JSON.stringify(mobileReviewLayout)}`)
+  assert.ok(mobileReviewLayout.cardWidth - mobileReviewLayout.previewWidth <= 2.5 && mobileReviewLayout.previewHeight > 400, `Phone preview does not fill the card's inner width: ${JSON.stringify(mobileReviewLayout)}`)
+  assert.equal(mobileReviewLayout.cardMaxWidth, 'none', 'Phone card retained a desktop max-width constraint')
+  assert.ok(mobileReviewLayout.adjustHeight >= 48, 'Adjust edges is not comfortably tappable')
+  assert.ok(mobileReviewLayout.controlSizes.every((control) => control.width >= 44 && control.height >= 44), 'A mobile page action has an undersized touch target')
+  const mobileMultiCardLayout = await page.evaluate(() => {
+    const grid = document.querySelector('.page-grid'); const original = grid.querySelector('.page-card'); const clones = [original.cloneNode(true), original.cloneNode(true)]
+    clones.forEach((clone) => grid.append(clone))
+    const cards = [...grid.querySelectorAll('.page-card')].map((card) => { const rect = card.getBoundingClientRect(); return { left: rect.left, top: rect.top, width: rect.width } })
+    clones.forEach((clone) => clone.remove())
+    return { gridWidth: grid.getBoundingClientRect().width, cards }
+  })
+  assert.ok(mobileMultiCardLayout.cards.every((card) => card.width / mobileMultiCardLayout.gridWidth >= .995), `Multiple phone cards do not fill the review grid: ${JSON.stringify(mobileMultiCardLayout)}`)
+  assert.equal(new Set(mobileMultiCardLayout.cards.map((card) => Math.round(card.left))).size, 1, 'Multiple phone cards formed side-by-side columns')
+  assert.equal(new Set(mobileMultiCardLayout.cards.map((card) => Math.round(card.top))).size, mobileMultiCardLayout.cards.length, 'Multiple phone cards did not form separate rows')
+
+  await page.setViewportSize({ width: 430, height: 932 })
+  const breakpointLayout = await page.evaluate(() => {
+    const card = document.querySelector('.page-card').getBoundingClientRect(); const grid = document.querySelector('.page-grid').getBoundingClientRect(); const preview = document.querySelector('.page-image-wrap').getBoundingClientRect()
+    return { breakpointMatches: matchMedia('(max-width: 430px)').matches, cardWidth: card.width, gridWidth: grid.width, previewWidth: preview.width, documentWidth: document.documentElement.scrollWidth, viewportWidth: innerWidth }
+  })
+  assert.equal(breakpointLayout.breakpointMatches, true, 'Phone breakpoint did not activate at 430px')
+  assert.ok(breakpointLayout.cardWidth / breakpointLayout.gridWidth >= .995, `Card does not fill the grid at the 430px breakpoint: ${JSON.stringify(breakpointLayout)}`)
+  assert.ok(breakpointLayout.cardWidth - breakpointLayout.previewWidth <= 2.5, `Preview does not fill the card's inner width at the 430px breakpoint: ${JSON.stringify(breakpointLayout)}`)
+  assert.ok(breakpointLayout.documentWidth <= breakpointLayout.viewportWidth, `430px review has horizontal overflow: ${JSON.stringify(breakpointLayout)}`)
+
+  await page.setViewportSize({ width: 440, height: 932 })
+  const largerPhoneLayout = await page.evaluate(() => {
+    const grid = document.querySelector('.page-grid').getBoundingClientRect(); const card = document.querySelector('.page-card').getBoundingClientRect()
+    return { gridWidth: grid.width, cardWidth: card.width, gridLeft: grid.left, cardLeft: card.left }
+  })
+  assert.ok(largerPhoneLayout.cardWidth / largerPhoneLayout.gridWidth >= .995, `Single page retained an empty second column above the 430px breakpoint: ${JSON.stringify(largerPhoneLayout)}`)
+
+  await page.setViewportSize({ width: 1200, height: 900 })
+  const desktopReviewLayout = await page.evaluate(() => ({ cardWidth: document.querySelector('.page-card').getBoundingClientRect().width, gridWidth: document.querySelector('.page-grid').getBoundingClientRect().width, documentWidth: document.documentElement.scrollWidth, viewportWidth: innerWidth }))
+  assert.ok(desktopReviewLayout.documentWidth <= desktopReviewLayout.viewportWidth, `Desktop review has horizontal overflow: ${JSON.stringify(desktopReviewLayout)}`)
+  assert.ok(desktopReviewLayout.cardWidth < desktopReviewLayout.gridWidth / 2, 'Desktop page card expanded into an inefficient single-column layout')
+  const desktopMultiCardLayout = await page.evaluate(() => {
+    const grid = document.querySelector('.page-grid'); const original = grid.querySelector('.page-card'); const clones = [original.cloneNode(true), original.cloneNode(true), original.cloneNode(true)]
+    clones.forEach((clone) => grid.append(clone))
+    const cards = [...grid.querySelectorAll('.page-card')].map((card) => { const rect = card.getBoundingClientRect(); return { left: rect.left, top: rect.top, width: rect.width } })
+    clones.forEach((clone) => clone.remove())
+    return cards
+  })
+  assert.ok(new Set(desktopMultiCardLayout.map((card) => Math.round(card.left))).size >= 3, `Desktop cards did not form an efficient multi-column grid: ${JSON.stringify(desktopMultiCardLayout)}`)
+  await page.setViewportSize({ width: 390, height: 844 })
+
   if (!(await page.locator('.edge-editor').isVisible())) await page.getByRole('button', { name: 'Adjust edges' }).click()
   const corners = await page.locator('.corner-handle').evaluateAll((handles) => handles.map((handle) => ({
     x: Number.parseFloat(handle.style.left) / 100,
