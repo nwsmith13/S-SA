@@ -12,7 +12,9 @@
     "test:scanner-reliability": "node tests/scanner-reliability.regression.mjs",
     "test:scan-summary": "node tests/scan-summary.regression.mjs",
     "test:routing": "node tests/spa-routing.regression.mjs",
-    "test:cloud-library": "node tests/cloud-library.regression.mjs"
+    "test:cloud-library": "node tests/cloud-library.regression.mjs",
+    "test:library-management": "node tests/library-management.regression.mjs",
+    "test:library-management-v2": "node tests/library-management-v2.regression.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.3",

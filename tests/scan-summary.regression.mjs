@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { pdfFilename, resolveDocumentNames, sanitizeDocumentName } from '../src/document-processing/filenames.js'
+import { pdfFilename, resolveDocumentName, resolveDocumentNames, sanitizeDocumentName } from '../src/document-processing/filenames.js'
 import { createZipBlob } from '../src/document-processing/zip.js'
 
 assert.equal(sanitizeDocumentName('  Quarterly report.pdf  ', 'Scan-1'), 'Quarterly report')
@@ -9,6 +9,8 @@ assert.equal(sanitizeDocumentName('CON', 'Scan-1'), 'CON-document')
 assert.equal(sanitizeDocumentName('   ', 'Scan-7'), 'Scan-7')
 assert.equal(sanitizeDocumentName(`${'A'.repeat(140)}.pdf`, 'Scan-1').length, 120)
 assert.equal(pdfFilename('Quarterly report'), 'Quarterly report.pdf')
+assert.equal(resolveDocumentName(' Report.pdf ', 'Scan', ['Report']), 'Report (2)')
+assert.equal(resolveDocumentName('CON', 'Scan', []), 'CON-document')
 
 const named = resolveDocumentNames([
   { id: 'stable-a', name: 'Report', fallbackName: 'Scan-1' },
