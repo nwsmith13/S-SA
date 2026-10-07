@@ -1,12 +1,13 @@
 import type { DetectionResult, Point, ProcessedPage, ProcessingMode } from './types'
 import { emitDiagnostic, serializeDiagnosticError } from './diagnostics'
 import { getOpenCv, getOpenCvInitializationMs, type CvRuntime } from './opencv-loader'
-import { findIndependentAgreement, selectCandidateByQuality, shouldAutoApplyCandidate, type CandidateAgreement, type CandidateQualityAssessment } from './candidate-quality'
+import { classifyContourArea, findIndependentAgreement, selectCandidateByQuality, shouldAutoApplyCandidate, type CandidateAgreement, type CandidateQualityAssessment } from './candidate-quality'
 
 type Cv = CvRuntime
 type LoadedImage = { source: CanvasImageSource; width: number; height: number; decodeMethod: 'image-bitmap' | 'html-image'; release: () => void }
 type Candidate = { points: Point[]; confidence: number; method: DetectionResult['method'] }
-type StageStats = { contours: number; eligibleContours: number; exactCandidates: number; hullCandidates: number; maxAreaRatio: number; above2Percent: number; above4Percent: number; above6Percent: number; rejectedBelow8Percent: number }
+type SmallContourEvaluation = { contourIndex: number; areaRatio: number; exactCandidate: boolean; hullCandidate: boolean }
+type StageStats = { contours: number; eligibleContours: number; smallContoursAdmitted: number; smallContourEvaluations: SmallContourEvaluation[]; exactCandidates: number; hullCandidates: number; maxAreaRatio: number; above2Percent: number; above4Percent: number; above6Percent: number; rejectedBelow4Percent: number; rejectedBelow8Percent: number }
 type DetectionDiagnostics = {
   file: { name: string; type: string; bytes: number }
   decode?: { method: LoadedImage['decodeMethod']; width: number; height: number }
@@ -14,7 +15,7 @@ type DetectionDiagnostics = {
   canny?: { median: number; low: number; high: number; otsu: number }
   stages: { light: StageStats; edge: StageStats; lines: { count: number; candidate: boolean } }
   rejections: Record<string, number>
-  candidates: Array<{ method: Candidate['method']; score: number; areaRatio: number; corners: number[][]; accepted: boolean; rejectionReasons: string[]; boundaryFollowingEdges: CandidateQualityAssessment['boundaryFollowingEdges'] }>
+  candidates: Array<{ method: Candidate['method']; score: number; areaRatio: number; corners: number[][]; accepted: boolean; rejectionReasons: string[]; boundaryFollowingEdges: CandidateQualityAssessment['boundaryFollowingEdges']; requiresIndependentAgreement: boolean; agreement: CandidateAgreement }>
   selected: number | null
   candidateQuality?: CandidateQualityAssessment
   fallback?: 'manual-adjust-edges'
@@ -118,12 +119,12 @@ function isFullImageBoundary(points: Point[], width: number, height: number) {
   return areaRatio > .92 || nearBorder === 4 || (bounds.left < .015 && bounds.top < .015 && bounds.right > .985 && bounds.bottom > .985)
 }
 
-function scoreCandidate(points: Point[], width: number, height: number, contourArea: number, method: Candidate['method'], diagnostics: DetectionDiagnostics): Candidate | null {
+function scoreCandidate(points: Point[], width: number, height: number, contourArea: number, method: Candidate['method'], diagnostics: DetectionDiagnostics, allowSmallDocument = false): Candidate | null {
   if (points.length !== 4) { incrementReason(diagnostics, 'not-four-corners'); return null }
   const ordered = orderCorners(points)
   if (isFullImageBoundary(ordered, width, height)) { incrementReason(diagnostics, 'full-image-boundary'); return null }
   const areaRatio = polygonArea(ordered) / (width * height)
-  if (areaRatio < .10) { incrementReason(diagnostics, 'candidate-too-small'); return null }
+  if (areaRatio < (allowSmallDocument ? .035 : .10)) { incrementReason(diagnostics, 'candidate-too-small'); return null }
   if (areaRatio > .9) { incrementReason(diagnostics, 'candidate-too-large'); return null }
   if (ordered.some((point) => point.x < -width * .03 || point.y < -height * .03 || point.x > width * 1.03 || point.y > height * 1.03)) { incrementReason(diagnostics, 'corner-outside-image'); return null }
 
@@ -132,6 +133,13 @@ function scoreCandidate(points: Point[], width: number, height: number, contourA
   const rectangularFill = Math.min(1, contourArea / Math.max(1, polygonArea(ordered)))
   const areaScore = 1 - Math.min(1, Math.abs(areaRatio - .52) / .52)
   const normalized = ordered.map((point) => ({ x: point.x / width, y: point.y / height }))
+  if (allowSmallDocument) {
+    const quality = selectCandidateByQuality([{ points: normalized, score: 0 }]).assessments[0]
+    if (!quality.accepted) {
+      quality.reasons.forEach((reason) => incrementReason(diagnostics, `${method}:small-document:${reason}`))
+      return null
+    }
+  }
   const inset = Math.min(...normalized.flatMap((point) => [point.x, point.y, 1 - point.x, 1 - point.y]))
   const methodWeight = method === 'light-contour' ? .1 : method === 'edge-contour' ? .06 : 0
   const confidence = Math.max(.2, Math.min(.97, .32 + areaScore * .23 + edgeBalance * .17 + rectangularFill * .16 + Math.min(.08, Math.max(0, inset)) + methodWeight))
@@ -170,17 +178,21 @@ function candidatesFromMask(cv: Cv, mask: any, width: number, height: number, me
       if (areaRatio >= .02) stats.above2Percent += 1
       if (areaRatio >= .04) stats.above4Percent += 1
       if (areaRatio >= .06) stats.above6Percent += 1
-      if (areaRatio < .08) { stats.rejectedBelow8Percent += 1; incrementReason(diagnostics, `${method}:contour-too-small`); contour.delete(); continue }
+      const contourEligibility = classifyContourArea(areaRatio)
+      const smallDocumentContour = contourEligibility === 'small-document'
+      if (contourEligibility === 'reject') { stats.rejectedBelow4Percent += 1; stats.rejectedBelow8Percent += 1; incrementReason(diagnostics, `${method}:contour-too-small`); contour.delete(); continue }
+      if (smallDocumentContour) stats.smallContoursAdmitted += 1
       stats.eligibleContours += 1
       let exactFound = false
+      const smallEvaluation = smallDocumentContour ? { contourIndex: index, areaRatio, exactCandidate: false, hullCandidate: false } : undefined
       try {
         for (const epsilon of [.012, .02, .032, .05, .075]) {
           const approx = new cv.Mat()
           try {
             cv.approxPolyDP(contour, approx, perimeter * epsilon, true)
             if (approx.rows !== 4 || !cv.isContourConvex(approx)) continue
-            const candidate = scoreCandidate(matPoints(approx), width, height, contourArea, method, diagnostics)
-            if (candidate) { candidates.push(candidate); stats.exactCandidates += 1; exactFound = true; break }
+            const candidate = scoreCandidate(matPoints(approx), width, height, contourArea, method, diagnostics, smallDocumentContour)
+            if (candidate) { candidates.push(candidate); stats.exactCandidates += 1; exactFound = true; if (smallEvaluation) smallEvaluation.exactCandidate = true; break }
           } finally { approx.delete() }
         }
 
@@ -190,11 +202,14 @@ function candidatesFromMask(cv: Cv, mask: any, width: number, height: number, me
             cv.convexHull(contour, hull, false, true)
             const quad = extremeQuad(matPoints(hull))
             if (!quad) incrementReason(diagnostics, `${method}:hull-had-no-quad`)
-            const candidate = quad ? scoreCandidate(quad, width, height, contourArea, 'edge-hull', diagnostics) : null
-            if (candidate) { candidates.push({ ...candidate, confidence: Math.min(candidate.confidence, .68) }); stats.hullCandidates += 1 }
+            const candidate = quad ? scoreCandidate(quad, width, height, contourArea, 'edge-hull', diagnostics, smallDocumentContour) : null
+            if (candidate) { candidates.push({ ...candidate, confidence: Math.min(candidate.confidence, .68) }); stats.hullCandidates += 1; if (smallEvaluation) smallEvaluation.hullCandidate = true }
           } finally { hull.delete() }
         }
-      } finally { contour.delete() }
+      } finally {
+        if (smallEvaluation) stats.smallContourEvaluations.push(smallEvaluation)
+        contour.delete()
+      }
     }
   } finally { working.delete(); contours.delete(); hierarchy.delete() }
   return candidates
@@ -231,8 +246,8 @@ export async function detectDocument(file: File): Promise<DetectionResult> {
   const diagnostics: DetectionDiagnostics = {
     file: { name: file.name, type: file.type, bytes: file.size },
     stages: {
-      light: { contours: 0, eligibleContours: 0, exactCandidates: 0, hullCandidates: 0, maxAreaRatio: 0, above2Percent: 0, above4Percent: 0, above6Percent: 0, rejectedBelow8Percent: 0 },
-      edge: { contours: 0, eligibleContours: 0, exactCandidates: 0, hullCandidates: 0, maxAreaRatio: 0, above2Percent: 0, above4Percent: 0, above6Percent: 0, rejectedBelow8Percent: 0 },
+      light: { contours: 0, eligibleContours: 0, smallContoursAdmitted: 0, smallContourEvaluations: [], exactCandidates: 0, hullCandidates: 0, maxAreaRatio: 0, above2Percent: 0, above4Percent: 0, above6Percent: 0, rejectedBelow4Percent: 0, rejectedBelow8Percent: 0 },
+      edge: { contours: 0, eligibleContours: 0, smallContoursAdmitted: 0, smallContourEvaluations: [], exactCandidates: 0, hullCandidates: 0, maxAreaRatio: 0, above2Percent: 0, above4Percent: 0, above6Percent: 0, rejectedBelow4Percent: 0, rejectedBelow8Percent: 0 },
       lines: { count: 0, candidate: false },
     },
     rejections: {}, candidates: [], selected: null,
@@ -306,6 +321,8 @@ export async function detectDocument(file: File): Promise<DetectionResult> {
       accepted: qualitySelection.assessments[index].accepted,
       rejectionReasons: qualitySelection.assessments[index].reasons,
       boundaryFollowingEdges: qualitySelection.assessments[index].boundaryFollowingEdges,
+      requiresIndependentAgreement: qualitySelection.assessments[index].requiresIndependentAgreement,
+      agreement: agreements[index],
     }))
     diagnostics.candidateQuality = candidateQuality
     diagnostics.methodAgreement = methodAgreement

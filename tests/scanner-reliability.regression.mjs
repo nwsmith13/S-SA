@@ -11,7 +11,7 @@ try {
   const page = await browser.newPage()
   await page.goto('http://127.0.0.1:4183/')
   const result = await page.evaluate(async () => {
-    const { assessCandidateQuality, findIndependentAgreement, selectCandidateByQuality, shouldAutoApplyCandidate } = await import('/src/document-processing/candidate-quality.ts')
+    const { assessCandidateQuality, classifyContourArea, findIndependentAgreement, selectCandidateByQuality, shouldAutoApplyCandidate } = await import('/src/document-processing/candidate-quality.ts')
     const { commitPageProcessingResult } = await import('/src/document-processing/page-identity.ts')
 
     const normal = assessCandidateQuality([
@@ -61,6 +61,28 @@ try {
       conflicting: shouldAutoApplyCandidate(physicalAssessment, physicalConflict),
       singleMethod: shouldAutoApplyCandidate(physicalAssessment, singleMethod),
     }
+    const distantDocument = [
+      { x: .36, y: .30 }, { x: .61, y: .30 }, { x: .61, y: .61 }, { x: .36, y: .61 },
+    ]
+    const distantQuality = assessCandidateQuality(distantDocument, .74)
+    const distantCorroborated = findIndependentAgreement(0, [
+      { points: distantDocument, method: 'light-contour', score: .74, viable: true },
+      { points: distantDocument.map((point, index) => ({ x: point.x + (index % 2 ? .002 : -.001), y: point.y + .001 })), method: 'edge-contour', score: .71, viable: true },
+    ])
+    const distantSingleMethod = findIndependentAgreement(0, [{ points: distantDocument, method: 'light-contour', score: .74, viable: true }])
+    const thinNoise = assessCandidateQuality([
+      { x: .20, y: .40 }, { x: .80, y: .40 }, { x: .80, y: .50 }, { x: .20, y: .50 },
+    ], .78)
+    const tinyNoise = assessCandidateQuality([
+      { x: .20, y: .20 }, { x: .35, y: .20 }, { x: .35, y: .35 }, { x: .20, y: .35 },
+    ], .8)
+    const distantDecisions = {
+      contour077: classifyContourArea(.077197),
+      contour078: classifyContourArea(.077846),
+      contourNoise: classifyContourArea(.02),
+      corroborated: shouldAutoApplyCandidate(distantQuality, distantCorroborated),
+      singleMethod: shouldAutoApplyCandidate(distantQuality, distantSingleMethod),
+    }
 
     let documents = [{ id: 'document-1', pages: [
       { id: 'page-a', processingToken: 'a-new', processedUrl: 'a-original' },
@@ -78,7 +100,7 @@ try {
     ] }]
     sharedTokenDocuments = commitPageProcessingResult(sharedTokenDocuments, 'page-m', 'shared-token', (page) => ({ ...page, processedUrl: 'm-result' }))
 
-    return { normal, angled, borderHugging, twoSideBoundary, ranked, clipped, clippedLoneAgreement, clippedCorroboratedAgreement, physicalCorroborated, physicalConflict, singleMethod, physicalDecisions, pages: documents[0].pages, sharedTokenPages: sharedTokenDocuments[0].pages }
+    return { normal, angled, borderHugging, twoSideBoundary, ranked, clipped, clippedLoneAgreement, clippedCorroboratedAgreement, physicalCorroborated, physicalConflict, singleMethod, physicalDecisions, distantQuality, distantCorroborated, distantSingleMethod, distantDecisions, thinNoise, tinyNoise, pages: documents[0].pages, sharedTokenPages: sharedTokenDocuments[0].pages }
   })
 
   assert.equal(result.normal.accepted, true, '0.968 / 0.405 normal candidate was rejected')
@@ -105,6 +127,18 @@ try {
   assert.equal(result.physicalDecisions.corroborated, true, 'Corroborated physical case should remain eligible for automatic application')
   assert.equal(result.physicalDecisions.conflicting, false, 'Conflicting physical case should require Adjust Edges')
   assert.equal(result.physicalDecisions.singleMethod, true, 'A sound single-method detection should retain an automatic path')
+  assert.equal(result.distantDecisions.contour077, 'small-document', '7.7197% contour did not enter the bounded small-document path')
+  assert.equal(result.distantDecisions.contour078, 'small-document', '7.7846% contour did not enter the bounded small-document path')
+  assert.equal(result.distantDecisions.contourNoise, 'reject', '2% noise contour entered candidate evaluation')
+  assert.ok(result.distantQuality.areaRatio > .07 && result.distantQuality.areaRatio < .08, 'Distant-document fixture is outside the physical diagnostic area range')
+  assert.equal(result.distantQuality.accepted, true, 'Plausible distant document failed geometric prequalification')
+  assert.equal(result.distantQuality.requiresIndependentAgreement, true, 'Small document did not require independent-method evidence')
+  assert.equal(result.distantDecisions.corroborated, true, 'Corroborated small document should be eligible for auto-apply')
+  assert.equal(result.distantDecisions.singleMethod, false, 'Single-method small document should require manual review')
+  assert.equal(result.thinNoise.accepted, false, 'Thin small noise passed geometric prequalification')
+  assert.ok(result.thinNoise.reasons.includes('small-region-with-implausible-edge-balance'))
+  assert.equal(result.tinyNoise.accepted, false, 'Sub-4% noise passed candidate quality')
+  assert.ok(result.tinyNoise.reasons.includes('candidate-too-small'))
   assert.deepEqual(result.pages, [{ id: 'page-a', processingToken: 'a-new', processedUrl: 'a-result' }], 'Out-of-order processing crossed stable page identity')
   assert.deepEqual(result.sharedTokenPages, [
     { id: 'page-m', processingToken: 'shared-token', processedUrl: 'm-result' },

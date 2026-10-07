@@ -9,6 +9,8 @@ export type CandidateQualityAssessment = {
   touchedSides: Array<'left' | 'right' | 'top' | 'bottom'>
   boundaryFollowingEdges: Array<{ side: 'left' | 'right' | 'top' | 'bottom'; length: number }>
   edgeBalance: number
+  oppositeEdgeBalance: number
+  diagonalBalance: number
   convex: boolean
   requiresIndependentAgreement: boolean
   reasons: string[]
@@ -17,6 +19,12 @@ export type CandidateQualityAssessment = {
 export type CandidateAgreement = { corroborated: boolean; independentCandidateFound: boolean; materialConflict: boolean; comparisonMethod?: string; comparisonScore?: number; meanCornerDistance?: number; maximumCornerDistance?: number }
 
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y)
+
+export function classifyContourArea(areaRatio: number): 'standard' | 'small-document' | 'reject' {
+  if (areaRatio >= .08) return 'standard'
+  if (areaRatio >= .04) return 'small-document'
+  return 'reject'
+}
 
 function area(points: Point[]) {
   return Math.abs(points.reduce((sum, point, index) => {
@@ -45,6 +53,12 @@ export function assessCandidateQuality(points: Point[], originalScore: number): 
     return 1 - point.y <= borderThreshold
   }))
   const edgeLengths = points.map((point, index) => distance(point, points[(index + 1) % points.length]))
+  const oppositeEdgeBalance = Math.min(
+    Math.min(edgeLengths[0], edgeLengths[2]) / Math.max(edgeLengths[0], edgeLengths[2]),
+    Math.min(edgeLengths[1], edgeLengths[3]) / Math.max(edgeLengths[1], edgeLengths[3]),
+  )
+  const diagonals = [distance(points[0], points[2]), distance(points[1], points[3])]
+  const diagonalBalance = Math.min(...diagonals) / Math.max(...diagonals)
   const boundaryFollowingEdges = points.flatMap((point, index) => {
     const next = points[(index + 1) % points.length]
     const length = distance(point, next)
@@ -59,16 +73,21 @@ export function assessCandidateQuality(points: Point[], originalScore: number): 
   })
   const edgeBalance = Math.min(...edgeLengths) / Math.max(...edgeLengths)
   const convex = isConvex(points)
-  const requiresIndependentAgreement = areaRatio >= .60 && borderCornerCount >= 2 && touchedSides.length >= 2
+  const smallDocument = areaRatio >= .035 && areaRatio < .10
+  const requiresIndependentAgreement = smallDocument || (areaRatio >= .60 && borderCornerCount >= 2 && touchedSides.length >= 2)
   const reasons: string[] = []
 
   if (!convex) reasons.push('non-convex-quadrilateral')
+  if (areaRatio < .035) reasons.push('candidate-too-small')
+  if (smallDocument && edgeBalance < .25) reasons.push('small-region-with-implausible-edge-balance')
+  if (smallDocument && oppositeEdgeBalance < .35) reasons.push('small-region-with-implausible-opposite-edges')
+  if (smallDocument && diagonalBalance < .55) reasons.push('small-region-with-implausible-diagonals')
   if (areaRatio >= .65 && borderCornerCount >= 3) reasons.push('large-region-with-three-border-corners')
   if (areaRatio >= .65 && touchedSides.length >= 3) reasons.push('large-region-touching-three-image-sides')
   if (areaRatio >= .60 && borderCornerCount >= 2 && touchedSides.length >= 2 && boundaryFollowingEdges.length >= 1) reasons.push('large-region-with-edge-following-image-boundary')
   if (areaRatio >= .55 && borderCornerCount >= 2 && edgeBalance < .25) reasons.push('large-border-region-with-implausible-edge-balance')
 
-  return { accepted: reasons.length === 0, originalScore, areaRatio, borderThreshold, borderCornerCount, touchedSides, boundaryFollowingEdges, edgeBalance, convex, requiresIndependentAgreement, reasons }
+  return { accepted: reasons.length === 0, originalScore, areaRatio, borderThreshold, borderCornerCount, touchedSides, boundaryFollowingEdges, edgeBalance, oppositeEdgeBalance, diagonalBalance, convex, requiresIndependentAgreement, reasons }
 }
 
 export function selectCandidateByQuality(candidates: Array<{ points: Point[]; score: number }>) {
