@@ -224,6 +224,7 @@ main { min-height: calc(100vh - 78px); }
 .modal-close { width: 44px; height: 44px; flex: 0 0 auto; border: 1px solid var(--ink); background: transparent; color: var(--ink); font-size: 1.7rem; cursor: pointer; }
 .edge-image-frame { position: relative; width: fit-content; max-width: 100%; max-height: calc(100vh - 260px); margin: 0 auto; line-height: 0; background: #24211f; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .edge-image-frame > img { display: block; width: auto; max-width: 100%; height: auto; max-height: calc(100vh - 260px); object-fit: contain; pointer-events: none; user-select: none; -webkit-user-select: none; -webkit-user-drag: none; -webkit-touch-callout: none; }
+.edge-image-stage { display: grid; place-items: center; }
 .edge-overlay { position: absolute; inset: 0; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .edge-overlay svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .edge-overlay polygon { fill: rgb(212 20 104 / .1); stroke: var(--accent); stroke-width: .75; vector-effect: non-scaling-stroke; }
@@ -347,12 +348,21 @@ main { min-height: calc(100vh - 78px); }
   .summary-actions .primary-button { width: 100%; margin: 10px 0 0; }
   .summary-actions p { margin-top: 13px; text-align: center; }
   .modal-backdrop { padding: 0; align-items: stretch; }
-  .edge-editor, .comparison-modal { width: 100%; max-height: 100vh; padding: 20px; border: 0; box-shadow: none; }
-  .edge-image-frame, .edge-image-frame > img { max-height: calc(100vh - 305px); }
-  .edge-editor > footer { display: block; }
+  .modal-backdrop { z-index: 100; padding: calc(12px + env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom)); }
+  .edge-editor, .comparison-modal { width: 100%; max-height: 100%; padding: 20px; border: 0; box-shadow: none; }
+  .edge-editor { height: 100%; display: flex; flex-direction: column; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .edge-editor > header { flex: 0 0 auto; gap: 14px; margin-bottom: 10px; }
+  .edge-editor > header .kicker { margin-bottom: 5px; font-size: .64rem; }
+  .edge-editor h2 { font-size: clamp(1.28rem, 5.6vw, 1.7rem); line-height: 1.08; }
+  .edge-editor .modal-close { width: 40px; height: 40px; font-size: 1.5rem; }
+  .edge-image-stage { flex: 1 1 auto; min-height: 150px; overflow: visible; }
+  .edge-image-frame, .edge-image-frame > img { max-height: min(100%, calc(100dvh - 255px - env(safe-area-inset-top) - env(safe-area-inset-bottom))); }
+  .edge-image-frame > img { max-width: 100%; }
+  .edge-editor > footer { flex: 0 0 auto; display: block; margin-top: 12px; }
   .edge-secondary-actions { display: grid; grid-template-columns: 1fr 1fr; }
-  .edge-editor > footer .primary-button { width: 100%; margin-top: 10px; }
-  .corner-handle { width: 34px; height: 34px; }
+  .edge-secondary-actions button { min-height: 42px; padding-inline: 8px; font-size: .78rem; }
+  .edge-editor > footer .primary-button { width: 100%; min-height: 48px; margin-top: 8px; }
+  .corner-handle { width: 36px; height: 36px; }
   .comparison-image { height: 58vh; }
   .comparison-modal > footer { display: block; }
   .comparison-modal > footer .secondary-button { width: 100%; margin-top: 13px; }
@@ -364,6 +374,17 @@ main { min-height: calc(100vh - 78px); }
   .mobile-nav a.active { color: var(--accent); font-weight: 850; }
   .mobile-nav a:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
   .diagnostics-panel { bottom: calc(84px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 100px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
+  .modal-backdrop:has(.edge-editor) ~ .diagnostics-panel { display: none; }
+}
+
+@media (max-height: 700px) and (max-width: 800px) {
+  .modal-backdrop { padding-block: calc(8px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-bottom)); }
+  .edge-editor { padding: 14px; }
+  .edge-editor > header { margin-bottom: 7px; }
+  .edge-editor h2 { font-size: 1.2rem; }
+  .edge-image-stage { min-height: 120px; }
+  .edge-secondary-actions button { min-height: 38px; font-size: .72rem; }
+  .edge-editor > footer .primary-button { min-height: 44px; margin-top: 6px; }
 }
 
 @media (max-width: 430px) {

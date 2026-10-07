@@ -118,32 +118,34 @@ export function CornerEditor({ imageUrl, corners, detectedCorners, diagnosticIde
           <button className="modal-close" type="button" onClick={onClose} disabled={applying} aria-label="Close edge adjustment">×</button>
         </header>
 
-        <div className="edge-image-frame">
-          <img ref={imageRef} src={imageUrl} alt="Original document photo for edge adjustment" draggable={false} onLoad={() => setImageLoaded(true)} onDragStart={(event) => event.preventDefault()} />
-          <div
-            ref={overlayRef}
-            className="edge-overlay"
-            onPointerDown={(event) => event.preventDefault()}
-            onContextMenu={(event) => event.preventDefault()}
-          >
-            <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-              <polygon points={draft.map((point) => `${point.x * 100},${point.y * 100}`).join(' ')} />
-            </svg>
-            {draft.map((point, index) => (
-              <button
-                key={index}
-                className="corner-handle"
-                style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}
-                type="button"
-                disabled={applying}
-                aria-label={`Move corner ${index + 1}`}
-                onPointerDown={(event) => startCornerDrag(index, event)}
-                onPointerMove={(event) => moveCorner(index, event)}
-                onPointerUp={endCornerDrag}
-                onPointerCancel={endCornerDrag}
-                onLostPointerCapture={() => { activePointer.current = null }}
-              />
-            ))}
+        <div className="edge-image-stage">
+          <div className="edge-image-frame">
+            <img ref={imageRef} src={imageUrl} alt="Original document photo for edge adjustment" draggable={false} onLoad={() => setImageLoaded(true)} onDragStart={(event) => event.preventDefault()} />
+            <div
+              ref={overlayRef}
+              className="edge-overlay"
+              onPointerDown={(event) => event.preventDefault()}
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                <polygon points={draft.map((point) => `${point.x * 100},${point.y * 100}`).join(' ')} />
+              </svg>
+              {draft.map((point, index) => (
+                <button
+                  key={index}
+                  className="corner-handle"
+                  style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}
+                  type="button"
+                  disabled={applying}
+                  aria-label={`Move corner ${index + 1}`}
+                  onPointerDown={(event) => startCornerDrag(index, event)}
+                  onPointerMove={(event) => moveCorner(index, event)}
+                  onPointerUp={endCornerDrag}
+                  onPointerCancel={endCornerDrag}
+                  onLostPointerCapture={() => { activePointer.current = null }}
+                />
+              ))}
+            </div>
           </div>
         </div>
 
