@@ -1,7 +1,7 @@
 import type { DetectionResult, Point, ProcessedPage, ProcessingMode } from './types'
 import { emitDiagnostic, serializeDiagnosticError } from './diagnostics'
 import { getOpenCv, getOpenCvInitializationMs, type CvRuntime } from './opencv-loader'
-import { findIndependentAgreement, selectCandidateByQuality, type CandidateAgreement, type CandidateQualityAssessment } from './candidate-quality'
+import { findIndependentAgreement, selectCandidateByQuality, shouldAutoApplyCandidate, type CandidateAgreement, type CandidateQualityAssessment } from './candidate-quality'
 
 type Cv = CvRuntime
 type LoadedImage = { source: CanvasImageSource; width: number; height: number; decodeMethod: 'image-bitmap' | 'html-image'; release: () => void }
@@ -20,7 +20,7 @@ type DetectionDiagnostics = {
   fallback?: 'manual-adjust-edges'
   selectionDecision?: { highestScoreIndex: number | null; selectedIndex: number | null; rejectedHigherCandidates: number; behavior: 'auto-apply' | 'manual-adjust-edges' }
   methodAgreement?: CandidateAgreement
-  confidenceDecision?: { originalScore: number; returnedConfidence: number; requiresIndependentAgreement: boolean; corroborated: boolean; behavior: 'auto-apply' | 'manual-adjust-edges' }
+  confidenceDecision?: { originalScore: number; returnedConfidence: number; requiresIndependentAgreement: boolean; independentCandidateFound: boolean; corroborated: boolean; materialConflict: boolean; reason: 'geometry-and-confidence' | 'independent-method-agreement' | 'independent-method-conflict' | 'required-agreement-missing' | 'candidate-quality-rejected'; behavior: 'auto-apply' | 'manual-adjust-edges' }
 }
 
 class ProcessingPipelineError extends Error {
@@ -288,14 +288,15 @@ export async function detectDocument(file: File): Promise<DetectionResult> {
     candidates.sort((a, b) => b.confidence - a.confidence)
     const normalizedCandidates = candidates.map((candidate) => candidate.points.map((point) => ({ x: point.x / width, y: point.y / height })))
     const qualitySelection = selectCandidateByQuality(candidates.map((candidate, index) => ({ points: normalizedCandidates[index], score: candidate.confidence })))
-    const agreements = candidates.map((_candidate, index) => findIndependentAgreement(index, candidates.map((candidate, candidateIndex) => ({ points: normalizedCandidates[candidateIndex], method: candidate.method }))))
-    const autoApplyIndex = qualitySelection.assessments.findIndex((assessment, index) => assessment.accepted && (!assessment.requiresIndependentAgreement || agreements[index].corroborated))
+    const agreementInputs = candidates.map((candidate, index) => ({ points: normalizedCandidates[index], method: candidate.method, score: candidate.confidence, viable: qualitySelection.assessments[index].accepted && candidate.confidence >= .5 }))
+    const agreements = candidates.map((_candidate, index) => findIndependentAgreement(index, agreementInputs))
+    const autoApplyIndex = qualitySelection.assessments.findIndex((assessment, index) => shouldAutoApplyCandidate(assessment, agreements[index]))
     const acceptedIndex = qualitySelection.selectedIndex
     const bestIndex = autoApplyIndex >= 0 ? autoApplyIndex : acceptedIndex >= 0 ? acceptedIndex : candidates.length ? 0 : -1
     const best = bestIndex >= 0 ? candidates[bestIndex] : undefined
     const normalizedBest = bestIndex >= 0 ? normalizedCandidates[bestIndex] : undefined
     const candidateQuality = bestIndex >= 0 ? qualitySelection.assessments[bestIndex] : undefined
-    const methodAgreement = bestIndex >= 0 ? agreements[bestIndex] : { corroborated: false }
+    const methodAgreement = bestIndex >= 0 ? agreements[bestIndex] : { corroborated: false, independentCandidateFound: false, materialConflict: false }
     const autoApply = autoApplyIndex >= 0
     diagnostics.candidates = candidates.slice(0, 12).map((candidate, index) => ({
       method: candidate.method,
@@ -311,7 +312,13 @@ export async function detectDocument(file: File): Promise<DetectionResult> {
     diagnostics.selected = autoApply ? bestIndex : null
     diagnostics.selectionDecision = { highestScoreIndex: candidates.length ? 0 : null, selectedIndex: autoApply ? bestIndex : null, rejectedHigherCandidates: autoApply ? bestIndex : candidates.length, behavior: autoApply ? 'auto-apply' : 'manual-adjust-edges' }
     const returnedConfidence = best ? autoApply ? best.confidence : Math.min(.49, best.confidence) : 0
-    if (best && candidateQuality) diagnostics.confidenceDecision = { originalScore: best.confidence, returnedConfidence, requiresIndependentAgreement: candidateQuality.requiresIndependentAgreement, corroborated: methodAgreement.corroborated, behavior: autoApply ? 'auto-apply' : 'manual-adjust-edges' }
+    if (best && candidateQuality) {
+      const reason = !candidateQuality.accepted ? 'candidate-quality-rejected'
+        : methodAgreement.materialConflict ? 'independent-method-conflict'
+          : candidateQuality.requiresIndependentAgreement && !methodAgreement.corroborated ? 'required-agreement-missing'
+            : methodAgreement.corroborated ? 'independent-method-agreement' : 'geometry-and-confidence'
+      diagnostics.confidenceDecision = { originalScore: best.confidence, returnedConfidence, requiresIndependentAgreement: candidateQuality.requiresIndependentAgreement, independentCandidateFound: methodAgreement.independentCandidateFound, corroborated: methodAgreement.corroborated, materialConflict: methodAgreement.materialConflict, reason, behavior: autoApply ? 'auto-apply' : 'manual-adjust-edges' }
+    }
     if (best && !autoApply) diagnostics.fallback = 'manual-adjust-edges'
     const detectionMs = performance.now() - detectionStarted
     const timing = { opencvInitMs, imageDecodeMs, detectionMs, totalMs: performance.now() - totalStarted }

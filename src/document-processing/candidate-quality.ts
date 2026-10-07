@@ -14,7 +14,7 @@ export type CandidateQualityAssessment = {
   reasons: string[]
 }
 
-export type CandidateAgreement = { corroborated: boolean; comparisonMethod?: string; meanCornerDistance?: number; maximumCornerDistance?: number }
+export type CandidateAgreement = { corroborated: boolean; independentCandidateFound: boolean; materialConflict: boolean; comparisonMethod?: string; comparisonScore?: number; meanCornerDistance?: number; maximumCornerDistance?: number }
 
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y)
 
@@ -77,17 +77,24 @@ export function selectCandidateByQuality(candidates: Array<{ points: Point[]; sc
   return { assessments, selectedIndex }
 }
 
-export function findIndependentAgreement(selectedIndex: number, candidates: Array<{ points: Point[]; method: string }>): CandidateAgreement {
+export function findIndependentAgreement(selectedIndex: number, candidates: Array<{ points: Point[]; method: string; score?: number; viable?: boolean }>): CandidateAgreement {
   const selected = candidates[selectedIndex]
-  if (!selected) return { corroborated: false }
+  if (!selected) return { corroborated: false, independentCandidateFound: false, materialConflict: false }
   const selectedFamily = selected.method.startsWith('light') ? 'light' : 'edge'
   const comparisons = candidates.flatMap((candidate, index) => {
     const family = candidate.method.startsWith('light') ? 'light' : 'edge'
-    if (index === selectedIndex || family === selectedFamily || candidate.points.length !== selected.points.length) return []
+    if (index === selectedIndex || family === selectedFamily || candidate.viable === false || candidate.points.length !== selected.points.length) return []
     const distances = selected.points.map((point, corner) => distance(point, candidate.points[corner]))
-    return [{ method: candidate.method, mean: distances.reduce((sum, value) => sum + value, 0) / distances.length, maximum: Math.max(...distances) }]
+    return [{ method: candidate.method, score: candidate.score, mean: distances.reduce((sum, value) => sum + value, 0) / distances.length, maximum: Math.max(...distances) }]
   }).sort((a, b) => a.mean - b.mean)
   const closest = comparisons[0]
-  if (!closest) return { corroborated: false }
-  return { corroborated: closest.mean <= .035 && closest.maximum <= .06, comparisonMethod: closest.method, meanCornerDistance: closest.mean, maximumCornerDistance: closest.maximum }
+  if (!closest) return { corroborated: false, independentCandidateFound: false, materialConflict: false }
+  const corroborated = closest.mean <= .035 && closest.maximum <= .06
+  return { corroborated, independentCandidateFound: true, materialConflict: !corroborated, comparisonMethod: closest.method, comparisonScore: closest.score, meanCornerDistance: closest.mean, maximumCornerDistance: closest.maximum }
+}
+
+export function shouldAutoApplyCandidate(assessment: CandidateQualityAssessment, agreement: CandidateAgreement): boolean {
+  return assessment.accepted
+    && !agreement.materialConflict
+    && (!assessment.requiresIndependentAgreement || agreement.corroborated)
 }

@@ -11,7 +11,7 @@ try {
   const page = await browser.newPage()
   await page.goto('http://127.0.0.1:4183/')
   const result = await page.evaluate(async () => {
-    const { assessCandidateQuality, findIndependentAgreement, selectCandidateByQuality } = await import('/src/document-processing/candidate-quality.ts')
+    const { assessCandidateQuality, findIndependentAgreement, selectCandidateByQuality, shouldAutoApplyCandidate } = await import('/src/document-processing/candidate-quality.ts')
     const { commitPageProcessingResult } = await import('/src/document-processing/page-identity.ts')
 
     const normal = assessCandidateQuality([
@@ -43,6 +43,24 @@ try {
       { points: clippedPoints, method: 'light-contour' },
       { points: clippedPoints.map((point, index) => ({ x: point.x + (index % 2 ? -.004 : .003), y: point.y + .002 })), method: 'edge-contour' },
     ])
+    const physicalBase = [
+      { x: .15, y: .15 }, { x: .75, y: .15 }, { x: .75, y: .80 }, { x: .15, y: .80 },
+    ]
+    const physicalCorroborated = findIndependentAgreement(0, [
+      { points: physicalBase, method: 'light-contour', score: .940, viable: true },
+      { points: physicalBase.map((point, index) => ({ x: point.x + [.0003, .0005, .00066, .00104][index], y: point.y })), method: 'edge-contour', score: .91, viable: true },
+    ])
+    const physicalConflict = findIndependentAgreement(0, [
+      { points: physicalBase, method: 'edge-contour', score: .922, viable: true },
+      { points: [{ x: .23, y: .15 }, { x: .75, y: .30 }, { x: .496, y: .80 }, { x: .15, y: .612 }], method: 'light-contour', score: .87, viable: true },
+    ])
+    const singleMethod = findIndependentAgreement(0, [{ points: physicalBase, method: 'edge-contour', score: .922, viable: true }])
+    const physicalAssessment = assessCandidateQuality(physicalBase)
+    const physicalDecisions = {
+      corroborated: shouldAutoApplyCandidate(physicalAssessment, physicalCorroborated),
+      conflicting: shouldAutoApplyCandidate(physicalAssessment, physicalConflict),
+      singleMethod: shouldAutoApplyCandidate(physicalAssessment, singleMethod),
+    }
 
     let documents = [{ id: 'document-1', pages: [
       { id: 'page-a', processingToken: 'a-new', processedUrl: 'a-original' },
@@ -60,7 +78,7 @@ try {
     ] }]
     sharedTokenDocuments = commitPageProcessingResult(sharedTokenDocuments, 'page-m', 'shared-token', (page) => ({ ...page, processedUrl: 'm-result' }))
 
-    return { normal, angled, borderHugging, twoSideBoundary, ranked, clipped, clippedLoneAgreement, clippedCorroboratedAgreement, pages: documents[0].pages, sharedTokenPages: sharedTokenDocuments[0].pages }
+    return { normal, angled, borderHugging, twoSideBoundary, ranked, clipped, clippedLoneAgreement, clippedCorroboratedAgreement, physicalCorroborated, physicalConflict, singleMethod, physicalDecisions, pages: documents[0].pages, sharedTokenPages: sharedTokenDocuments[0].pages }
   })
 
   assert.equal(result.normal.accepted, true, '0.968 / 0.405 normal candidate was rejected')
@@ -77,6 +95,16 @@ try {
   assert.equal(result.clipped.requiresIndependentAgreement, true, 'Large two-side candidate did not require independent agreement')
   assert.equal(result.clippedLoneAgreement.corroborated, false, 'Lone light candidate was incorrectly corroborated')
   assert.equal(result.clippedCorroboratedAgreement.corroborated, true, 'Matching light and edge candidates were not recognized as corroborating')
+  assert.equal(result.physicalCorroborated.corroborated, true, 'Physical 0.940 near-identical light/edge case lost corroboration')
+  assert.ok(Math.abs(result.physicalCorroborated.meanCornerDistance - .000625) < .000001, 'Corroborated physical-case mean distance changed')
+  assert.ok(Math.abs(result.physicalCorroborated.maximumCornerDistance - .00104) < .000001, 'Corroborated physical-case maximum distance changed')
+  assert.equal(result.physicalConflict.materialConflict, true, 'Physical 0.922 disagreement was not treated as a material conflict')
+  assert.ok(Math.abs(result.physicalConflict.meanCornerDistance - .168) < .000001, 'Conflicting physical-case mean distance changed')
+  assert.ok(Math.abs(result.physicalConflict.maximumCornerDistance - .254) < .000001, 'Conflicting physical-case maximum distance changed')
+  assert.equal(result.singleMethod.independentCandidateFound, false, 'Single-method detection was incorrectly treated as a conflict')
+  assert.equal(result.physicalDecisions.corroborated, true, 'Corroborated physical case should remain eligible for automatic application')
+  assert.equal(result.physicalDecisions.conflicting, false, 'Conflicting physical case should require Adjust Edges')
+  assert.equal(result.physicalDecisions.singleMethod, true, 'A sound single-method detection should retain an automatic path')
   assert.deepEqual(result.pages, [{ id: 'page-a', processingToken: 'a-new', processedUrl: 'a-result' }], 'Out-of-order processing crossed stable page identity')
   assert.deepEqual(result.sharedTokenPages, [
     { id: 'page-m', processingToken: 'shared-token', processedUrl: 'm-result' },
