@@ -10,6 +10,7 @@
     "test:detection": "node tests/document-detection.regression.mjs",
     "test:opencv-loader": "node tests/opencv-loader.regression.mjs",
     "test:scanner-reliability": "node tests/scanner-reliability.regression.mjs",
+    "test:scan-summary": "node tests/scan-summary.regression.mjs",
     "test:routing": "node tests/spa-routing.regression.mjs"
   },
   "dependencies": {
