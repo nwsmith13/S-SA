@@ -14,7 +14,8 @@
     "test:routing": "node tests/spa-routing.regression.mjs",
     "test:cloud-library": "node tests/cloud-library.regression.mjs",
     "test:library-management": "node tests/library-management.regression.mjs",
-    "test:library-management-v2": "node tests/library-management-v2.regression.mjs"
+    "test:library-management-v2": "node tests/library-management-v2.regression.mjs",
+    "test:auth-password": "node tests/auth-password.regression.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.3",

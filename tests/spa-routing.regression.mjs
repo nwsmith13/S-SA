@@ -32,7 +32,7 @@ const browser = await chromium.launch({ executablePath: edgePath, headless: true
 
 try {
   const base = 'http://127.0.0.1:4180'
-  for (const route of ['/', '/scan', '/scan?diagnostics=1', '/cleanup', '/library', '/library/11111111-1111-4111-8111-111111111111', '/account']) {
+  for (const route of ['/', '/scan', '/scan?diagnostics=1', '/cleanup', '/library', '/library/11111111-1111-4111-8111-111111111111', '/account', '/account/reset-password', '/auth/callback']) {
     const response = await fetch(`${base}${route}`, { redirect: 'manual' })
     assert.equal(response.status, 200, `${route} did not resolve`)
     assert.match(response.headers.get('content-type') ?? '', /text\/html/, `${route} did not receive the SPA entry point`)
@@ -56,7 +56,7 @@ try {
   assert.equal(await page.getByRole('heading', { name: 'Make paper easier to keep.' }).isVisible(), true, 'Refreshing a nested route failed')
   assert.equal(await page.locator('.diagnostics-panel').isVisible(), true, 'Query-enabled diagnostics disappeared after refresh')
 
-  console.log(JSON.stringify({ routes: ['/', '/scan', '/scan?diagnostics=1', '/cleanup', '/library', '/library/:documentId', '/account'], nestedRefresh: 'passed', staticAssetPrecedence: 'passed', productionDiagnosticsQuery: 'passed' }, null, 2))
+  console.log(JSON.stringify({ routes: ['/', '/scan', '/scan?diagnostics=1', '/cleanup', '/library', '/library/:documentId', '/account', '/account/reset-password', '/auth/callback'], nestedRefresh: 'passed', staticAssetPrecedence: 'passed', productionDiagnosticsQuery: 'passed' }, null, 2))
 } finally {
   await browser.close()
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
