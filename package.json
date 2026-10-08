@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "node ./node_modules/vite/bin/vite.js",
+    "dev": "node ./node_modules/vite/bin/vite.js --host localhost --port 5173 --strictPort",
     "build": "node ./node_modules/typescript/bin/tsc -b && node ./node_modules/vite/bin/vite.js build",
     "preview": "node ./node_modules/vite/bin/vite.js preview",
     "test:detection": "node tests/document-detection.regression.mjs",
@@ -16,7 +16,8 @@
     "test:library-management": "node tests/library-management.regression.mjs",
     "test:library-management-v2": "node tests/library-management-v2.regression.mjs",
     "test:auth-password": "node tests/auth-password.regression.mjs",
-    "test:account-profile": "node tests/account-profile.regression.mjs"
+    "test:account-profile": "node tests/account-profile.regression.mjs",
+    "test:google-oauth-safety": "node --experimental-strip-types tests/google-oauth-safety.regression.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.3",

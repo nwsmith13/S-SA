@@ -1,6 +1,6 @@
 // @ts-check
 
-/** @param {unknown} error @param {'sign-in'|'sign-up'|'reset-request'|'recovery'|'magic-link'} context */
+/** @param {unknown} error @param {'sign-in'|'sign-up'|'reset-request'|'recovery'|'magic-link'|'identity-link'} context */
 export function authErrorMessage(error, context) {
   const raw = error && typeof error === 'object' && 'message' in error ? String(error.message) : ''
   const message = raw.toLocaleLowerCase()
@@ -15,5 +15,6 @@ export function authErrorMessage(error, context) {
   if (context === 'sign-up') return 'S&SA could not create the account. Review your details and try again.'
   if (context === 'reset-request') return 'S&SA could not send the password-reset email. Try again shortly.'
   if (context === 'recovery') return 'S&SA could not update your password. Request a new recovery link and try again.'
+  if (context === 'identity-link') return 'S&SA could not connect Google to your account. Your existing sign-in and Library are unchanged.'
   return 'S&SA could not send the sign-in email. Try again shortly.'
 }

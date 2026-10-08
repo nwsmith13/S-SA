@@ -2,7 +2,8 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { PageIntro } from '../components/PageIntro'
 import { useAuth } from '../services/AuthContext'
 import { getUserProfile, saveUserProfile } from '../services/profile'
-import { isGoogleAuthEnabled, supabase } from '../services/supabase'
+import { getIdentityEmail, GOOGLE_LINK_PENDING_KEY, GOOGLE_LINK_RESULT_KEY, oauthOriginConfigurationError, readStoredValue, writeStoredValue, type GoogleLinkResult, type PendingGoogleLink } from '../services/googleIdentityLink'
+import { authRedirectOrigins, isGoogleAuthEnabled, supabase } from '../services/supabase'
 import { authErrorMessage } from '../services/auth-errors.js'
 
 type AccountMode = 'sign-in' | 'create' | 'forgot'
@@ -18,6 +19,7 @@ export function AccountPage() {
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [profileLoading, setProfileLoading] = useState(false)
+  const [googleLinkResult, setGoogleLinkResult] = useState<GoogleLinkResult | null>(null)
 
   useEffect(() => {
     if (!user) return
@@ -27,6 +29,13 @@ export function AccountPage() {
       .catch(() => setError('Your profile could not be loaded. Your Library is unaffected.'))
       .finally(() => setProfileLoading(false))
   }, [user])
+
+  useEffect(() => {
+    const result = readStoredValue<GoogleLinkResult>(sessionStorage, GOOGLE_LINK_RESULT_KEY)
+    if (!result) return
+    setGoogleLinkResult(result)
+    sessionStorage.removeItem(GOOGLE_LINK_RESULT_KEY)
+  }, [])
 
   const begin = () => { setSubmitting(true); setMessage(''); setError('') }
   const changeMode = (next: AccountMode) => { setMode(next); setPassword(''); setConfirmPassword(''); setMessage(''); setError('') }
@@ -64,12 +73,21 @@ export function AccountPage() {
 
   const startGoogle = async (connect = false) => {
     if (!supabase || !isGoogleAuthEnabled) return
+    if (connect && (!user?.id || !user.email)) { setError('Your signed-in account could not be verified. Refresh and try again.'); return }
+    const originError = oauthOriginConfigurationError(window.location.origin, authRedirectOrigins)
+    if (originError) { setError(originError); return }
     begin()
-    const redirectTo = `${window.location.origin}/auth/callback${connect ? '?next=account' : ''}`
+    setGoogleLinkResult(null)
+    if (connect) writeStoredValue(sessionStorage, GOOGLE_LINK_PENDING_KEY, { userId: user!.id, accountEmail: user!.email! } satisfies PendingGoogleLink)
+    const redirectTo = `${window.location.origin}/auth/callback${connect ? '?next=account&auth_action=link-google' : ''}`
     const result = connect
       ? await supabase.auth.linkIdentity({ provider: 'google', options: { redirectTo } })
       : await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo } })
-    if (result.error) { setError(authErrorMessage(result.error, 'sign-in')); setSubmitting(false) }
+    if (result.error) {
+      if (connect) sessionStorage.removeItem(GOOGLE_LINK_PENDING_KEY)
+      setError(authErrorMessage(result.error, connect ? 'identity-link' : 'sign-in'))
+      setSubmitting(false)
+    }
   }
 
   const saveProfile = async (event: FormEvent) => {
@@ -99,7 +117,8 @@ export function AccountPage() {
 
   if (user) {
     const providers = new Set(user.identities?.map((identity) => identity.provider) ?? [])
-    return <div className="workspace-page account-page"><PageIntro kicker="Account" title={displayName ? `Hello, ${displayName}.` : 'Make this account yours.'}>Your personal details and sign-in security, in one place.</PageIntro><div className="account-dashboard"><section className="account-card account-profile-card"><div className="account-card-heading"><div className="account-avatar" aria-hidden="true">{displayName.trim().charAt(0).toUpperCase() || user.email?.charAt(0).toUpperCase() || 'S'}</div><div><p className="kicker">Profile</p><h2>{displayName || 'Add your name'}</h2><p>{user.email}</p></div></div><form onSubmit={saveProfile}><label htmlFor="profile-display-name">Name</label><input id="profile-display-name" autoComplete="name" required maxLength={100} value={displayName} disabled={profileLoading} onChange={(event) => setDisplayName(event.target.value)} placeholder="Your name"/><button className="primary-button" disabled={submitting || profileLoading}>{submitting ? 'Saving…' : 'Save name'}</button></form></section><section className="account-card account-security-card"><p className="kicker">Security</p><h2>Sign-in methods</h2><div className="account-status-row"><span>Email</span><strong>{user.email_confirmed_at ? 'Verified' : 'Verification pending'}</strong></div><div className="account-status-row"><span>Password</span><strong>{providers.has('email') ? 'Enabled' : 'Available'}</strong></div>{providers.has('google') && <div className="account-status-row"><span>Google</span><strong>Connected</strong></div>}<div className="account-actions"><button type="button" className="secondary-button" disabled={submitting} onClick={() => void sendPasswordReset()}>Change password</button>{isGoogleAuthEnabled && !providers.has('google') && <button type="button" className="secondary-button" disabled={submitting} onClick={() => void startGoogle(true)}>Connect Google</button>}<button type="button" className="account-text-action account-sign-out" disabled={submitting} onClick={() => void signOut()}>Sign out</button></div></section></div>{message && <p className="account-message account-page-message" role="status">{message}</p>}{error && <p className="account-error account-page-message" role="alert">{error}</p>}</div>
+    const connectedGoogleEmail = getIdentityEmail(user.identities?.find((identity) => identity.provider === 'google'))
+    return <div className="workspace-page account-page"><PageIntro kicker="Account" title={displayName ? `Hello, ${displayName}.` : 'Make this account yours.'}>Your personal details and sign-in security, in one place.</PageIntro><div className="account-dashboard"><section className="account-card account-profile-card"><div className="account-card-heading"><div className="account-avatar" aria-hidden="true">{displayName.trim().charAt(0).toUpperCase() || user.email?.charAt(0).toUpperCase() || 'S'}</div><div><p className="kicker">Profile</p><h2>{displayName || 'Add your name'}</h2><p>{user.email}</p></div></div><form onSubmit={saveProfile}><label htmlFor="profile-display-name">Name</label><input id="profile-display-name" autoComplete="name" required maxLength={100} value={displayName} disabled={profileLoading} onChange={(event) => setDisplayName(event.target.value)} placeholder="Your name"/><button className="primary-button" disabled={submitting || profileLoading}>{submitting ? 'Saving…' : 'Save name'}</button></form></section><section className="account-card account-security-card"><p className="kicker">Security</p><h2>Sign-in methods</h2><div className="account-status-row"><span>Email</span><strong>{user.email_confirmed_at ? 'Verified' : 'Verification pending'}</strong></div><div className="account-status-row"><span>Email sign-in</span><strong>Available</strong></div>{providers.has('google') && <div className="account-status-row"><span>Google</span><strong>{connectedGoogleEmail ? `Connected as ${connectedGoogleEmail}` : 'Connected'}</strong></div>}{isGoogleAuthEnabled && !providers.has('google') && <p className="google-link-guidance">Connect the Google account for <strong>{user.email}</strong>. Choosing another Google email will connect that different identity to this S&amp;SA account.</p>}<div className="account-actions"><button type="button" className="secondary-button" disabled={submitting} onClick={() => void sendPasswordReset()}>Set or change password</button>{isGoogleAuthEnabled && !providers.has('google') && <button type="button" className="secondary-button" disabled={submitting} onClick={() => void startGoogle(true)}>Connect Google</button>}<button type="button" className="account-text-action account-sign-out" disabled={submitting} onClick={() => void signOut()}>Sign out</button></div></section></div>{googleLinkResult && <p className={`account-page-message ${googleLinkResult.status === 'success' ? 'account-message' : googleLinkResult.status === 'mismatch' ? 'account-warning' : 'account-error'}`} role={googleLinkResult.status === 'success' ? 'status' : 'alert'}>{googleLinkResult.message}{googleLinkResult.googleEmail && <> Connected Google email: <strong>{googleLinkResult.googleEmail}</strong>.</>}{googleLinkResult.accountEmail && googleLinkResult.status === 'mismatch' && <> S&amp;SA email: <strong>{googleLinkResult.accountEmail}</strong>.</>}</p>}{message && <p className="account-message account-page-message" role="status">{message}</p>}{error && <p className="account-error account-page-message" role="alert">{error}</p>}</div>
   }
   const title = mode === 'sign-in' ? 'Sign in' : mode === 'create' ? 'Create account' : 'Reset your password'
   return <div className="workspace-page account-page"><PageIntro kicker="Account" title="Keep your scans with you.">Use one account to keep the same private Library across your devices.</PageIntro><section className="account-card">{loading ? <p>Checking your account…</p> : !configured ? <><h2>Cloud Library needs configuration.</h2><p>Add the Supabase URL and publishable key described in <code>.env.example</code>.</p></> : <><div className="account-mode" role="tablist" aria-label="Account options"><button role="tab" aria-selected={mode === 'sign-in'} onClick={() => changeMode('sign-in')}>Sign in</button><button role="tab" aria-selected={mode === 'create'} onClick={() => changeMode('create')}>Create account</button></div><form onSubmit={submit}><h2>{title}</h2>{mode === 'create' && <><label htmlFor="account-name">Name</label><input id="account-name" autoComplete="name" required maxLength={100} value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Your name" /></>}<label htmlFor="account-email">Email address</label><input id="account-email" type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" />{mode !== 'forgot' && <><label htmlFor="account-password">Password</label><input id="account-password" type="password" autoComplete={mode === 'create' ? 'new-password' : 'current-password'} required minLength={6} value={password} onChange={(event) => setPassword(event.target.value)} />{mode === 'create' && <><p className="password-requirement">Use at least 6 characters. Supabase will enforce any additional project password requirements.</p><label htmlFor="account-confirm-password">Confirm password</label><input id="account-confirm-password" type="password" autoComplete="new-password" required minLength={6} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></>}</>}{mode === 'sign-in' && <button className="account-text-action" type="button" onClick={() => changeMode('forgot')}>Forgot password?</button>}<button className="primary-button" disabled={submitting}>{submitting ? 'Please wait…' : mode === 'sign-in' ? 'Sign in' : mode === 'create' ? 'Create account' : 'Send password-reset email'}</button>{mode === 'forgot' && <button className="account-text-action" type="button" onClick={() => changeMode('sign-in')}>Back to sign in</button>}{message && <p className="account-message" role="status">{message}</p>}{error && <p className="account-error" role="alert">{error}</p>}</form>{mode === 'sign-in' && <div className="magic-link-option"><span>or</span>{isGoogleAuthEnabled && <button type="button" disabled={submitting} onClick={() => void startGoogle()}>Continue with Google</button>}<button type="button" disabled={submitting} onClick={() => void sendMagicLink()}>Email me a sign-in link instead</button><p>Existing email-link accounts can use Forgot password once to establish a password without changing accounts.</p></div>}</>}</section></div>

@@ -595,6 +595,8 @@ main { min-height: calc(100vh - 78px); }
 .account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 22px; }
 .account-sign-out { color: #9b2442; }
 .account-page-message { max-width: 980px; }
+.google-link-guidance { margin: 18px 0 0; padding: 12px 14px; border-left: 3px solid var(--fuchsia, #b60766); background: rgba(212, 11, 115, 0.06); color: var(--muted, #655f5b); }
+.account-warning { max-width: 980px; padding: 14px 16px; border: 1px solid #b77718; background: #fff4d8; color: #68420c; }
 
 @media (min-width: 801px) {
   .account-page, .library-page, .library-detail { padding-top: 28px; padding-bottom: 48px; }

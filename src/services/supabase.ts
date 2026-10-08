@@ -5,6 +5,10 @@ const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim()
 
 export const isCloudConfigured = Boolean(url && anonKey)
 export const isGoogleAuthEnabled = import.meta.env.VITE_GOOGLE_AUTH_ENABLED === 'true'
+export const authRedirectOrigins = (import.meta.env.VITE_AUTH_REDIRECT_ORIGINS ?? '')
+  .split(',')
+  .map((origin: string) => origin.trim())
+  .filter(Boolean)
 export const supabase = isCloudConfigured ? createClient(url!, anonKey!, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
 }) : null
