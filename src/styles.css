@@ -578,3 +578,34 @@ main { min-height: calc(100vh - 78px); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
+/* Personal account layout and desktop density */
+.account-dashboard {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.8fr);
+  gap: 22px;
+  max-width: 980px;
+}
+
+.account-dashboard .account-card { max-width: none; margin: 0; }
+.account-card-heading { display: flex; align-items: center; gap: 16px; margin-bottom: 22px; }
+.account-card-heading h2, .account-card-heading p { margin: 0; }
+.account-avatar { width: 58px; height: 58px; border-radius: 50%; display: grid; place-items: center; flex: 0 0 auto; background: var(--fuchsia, #d40b73); color: white; font: 700 1.45rem/1 var(--font-display, inherit); }
+.account-status-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 13px 0; border-bottom: 1px solid rgba(43, 38, 39, 0.13); }
+.account-status-row strong { color: var(--fuchsia, #b60766); font-size: 0.9rem; }
+.account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 22px; }
+.account-sign-out { color: #9b2442; }
+.account-page-message { max-width: 980px; }
+
+@media (min-width: 801px) {
+  .account-page, .library-page, .library-detail { padding-top: 28px; padding-bottom: 48px; }
+  .account-page .page-intro, .library-page .page-intro, .library-detail .page-intro { margin-bottom: 24px; }
+  .account-page .page-intro h1, .library-page .page-intro h1, .library-detail .page-intro h1 { font-size: clamp(2.15rem, 4vw, 4.1rem); line-height: 0.98; margin-block: 8px 12px; }
+  .account-page .account-card { padding: 28px; }
+  .library-page .library-toolbar, .library-page .library-management-bar { margin-block: 16px; }
+  .library-detail .detail-header { margin-bottom: 22px; }
+}
+
+@media (max-width: 800px) {
+  .account-dashboard { grid-template-columns: 1fr; }
+  .account-card-heading { align-items: flex-start; }
+}
