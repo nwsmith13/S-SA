@@ -207,6 +207,7 @@ try {
 
   await page.getByRole('button', { name: 'Adjust edges' }).click()
   assert.equal(await page.locator('.corner-handle').first().getAttribute('style'), manualPosition, 'Manual corner coordinates were not retained')
+  await page.getByRole('button', { name: 'Close edge adjustment' }).click()
   await diagnosticPanel.locator('summary').click()
   const diagnosticCopy = diagnosticPanel.locator('textarea')
   await diagnosticCopy.waitFor({ state: 'visible' })
